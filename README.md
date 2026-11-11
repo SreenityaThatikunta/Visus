@@ -39,7 +39,7 @@ The full write-up, including the synthetic dataset pipeline, is in [`docs/report
 ## Quick start
 
 ```bash
-git clone https://github.com/<your-username>/Visus.git
+git clone https://github.com/SreenityaThatikunta/Visus.git
 cd Visus
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
