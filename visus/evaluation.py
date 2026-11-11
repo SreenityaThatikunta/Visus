@@ -12,6 +12,7 @@ background IoU and their mean (two-class mIoU) are reported alongside it.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,7 +70,9 @@ def build_gt_index(gt_dir: str | Path, dataset: str) -> dict:
     lfw:    `<gt_dir>/{glasses,mask}/<Name_0001_prompt>.jpg` -> key lowercase stem
     """
     index = {}
-    for f in Path(gt_dir).rglob("*"):
+    # os.walk with followlinks so symlinked dataset folders work
+    files = [Path(root) / n for root, _, names in os.walk(gt_dir, followlinks=True) for n in names]
+    for f in files:
         if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
             continue
         if dataset == "celeba":
