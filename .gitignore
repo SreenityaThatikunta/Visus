@@ -1,0 +1,33 @@
+# Private notes (not for the public repo)
+private/
+
+# Data, weights and outputs
+/data/
+/checkpoints/*
+!/checkpoints/.gitkeep
+/runs/
+/outputs/
+*.pt
+*.pth
+*.dat
+
+# LaTeX build files
+docs/report/*.aux
+docs/report/*.log
+docs/report/*.out
+docs/report/*.fls
+docs/report/*.fdb_latexmk
+docs/report/*.synctex.gz
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
