@@ -1,0 +1,23 @@
+[project]
+name = "visus"
+version = "2.0.0"
+description = "Text-guided segmentation of facial occlusions (glasses, face masks) with CLIP attention and cross-modal fusion"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Arpita Deshmukh" }, { name = "Sreenitya Thatikunta" }]
+
+[tool.setuptools.packages.find]
+include = ["visus*"]
+
+[tool.ruff]
+line-length = 130
+target-version = "py310"
+extend-exclude = ["scripts/data/apply_glasses.py", "scripts/data/generate_gt_masks.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E402", "E731"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
