@@ -5,11 +5,11 @@ Segment glasses / face masks in one image or a folder of images.
                               --input assets/samples --output outputs/demo
 
 With `--prompt auto` (default) the prompt is read from the filename
-(`..._glasses.jpg` -> "glasses", `..._mask.jpg` -> "mask"). Pass `--prompt glasses`
-or `--prompt mask` to force one.
+(`..._glasses.jpg` -> "glasses", `..._mask.jpg` -> "face mask"). Pass e.g.
+`--prompt sunglasses` to set it yourself.
 
-Writes `<stem>_<prompt>_mask_binary.png` (the format `scripts/evaluate.py` expects)
-and a `<stem>_<prompt>_viz.png` figure for every image.
+Writes `<stem>_<prompt>_mask_binary.png` (occluded region white; the format
+`scripts/evaluate.py` expects) and a `<stem>_<prompt>_viz.png` figure for every image.
 """
 import argparse
 import os
@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tqdm import tqdm  # noqa: E402
 
-from visus.inference import DEFAULT_THRESHOLD, Predictor, list_images, prompts_from_filename  # noqa: E402
+from visus.inference import Predictor, list_images, prompts_from_filename  # noqa: E402
 
 
 def main():
@@ -28,7 +28,8 @@ def main():
     p.add_argument("--input", required=True, help="image file or directory")
     p.add_argument("--output", default="outputs/predictions")
     p.add_argument("--prompt", default="auto", help='"auto", "glasses", "mask", or any text')
-    p.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
+    p.add_argument("--threshold", type=float, default=None,
+                   help="default: the threshold stored in the checkpoint (chosen on validation)")
     p.add_argument("--no-figures", action="store_true", help="only write binary masks")
     p.add_argument("--device", default=None, help="cuda / mps / cpu (auto-detected if omitted)")
     a = p.parse_args()

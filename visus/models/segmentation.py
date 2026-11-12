@@ -14,7 +14,8 @@ class EnhancedSegmentationHead(nn.Module):
     Three-stage refinement: each stage convolves, then fuses with text features
     via CrossModalAttentionFusion, before a final 1x1 conv produces a mask.
 
-    Channel flow: 1 -> 128 -> CMAF(64) -> 128 -> CMAF(64) -> 64 -> CMAF(64) -> 1
+    Channel flow: in -> 128 -> CMAF(64) -> 128 -> CMAF(64) -> 64 -> CMAF(64) -> 1 (logits)
+    `in` is 1 (attention map only, v1) or 4 (attention map + RGB image, v2).
 
     If text_features is None the fusion blocks fall back to their internal
     vision_conv (text guidance is skipped gracefully).
@@ -56,7 +57,6 @@ class EnhancedSegmentationHead(nn.Module):
         self.conv4 = nn.Conv2d(fusion_hidden_dim, 1, 1)
 
         self.relu = nn.ReLU(inplace=True)
-        self.sigmoid = nn.Sigmoid()
 
     @staticmethod
     def _fuse(block: CrossModalAttentionFusion, x: torch.Tensor, text: torch.Tensor | None):
@@ -74,4 +74,4 @@ class EnhancedSegmentationHead(nn.Module):
         x = self.relu(self.bn3(self.conv3(x)))
         x = self._fuse(self.cross_modal_fusion3, x, text_features)
 
-        return self.sigmoid(self.conv4(x))
+        return self.conv4(x)                      # logits; the model applies the sigmoid

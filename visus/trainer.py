@@ -1,135 +1,123 @@
 """
-Trainer: owns the epoch loop, logging, and periodic output saving.
+Training loop: mixed precision, warmup + cosine schedule, validation every epoch,
+best-checkpoint selection on validation (not just "the last epoch").
 """
 from __future__ import annotations
+
+import json
+import math
+import os
+import time
 
 import torch
 from torch.utils.data import DataLoader
 
+from .checkpoint import save_checkpoint
 from .config import TrainingConfig
-from .visualize import (
-    save_masks_as_images,
-    create_mask_visualization_grid,
-    plot_loss_curve,
-)
-from .checkpoint import save_model_weights
+from .evaluation import evaluate_model
+from .losses import BCEDiceLoss
+from .visualize import plot_history, save_prediction_grid
 
 
 class Trainer:
     def __init__(self, model, optimizer, config: TrainingConfig):
-        self.model     = model
+        self.model = model
         self.optimizer = optimizer
-        self.cfg       = config
-        self.device    = config.device
+        self.cfg = config
+        self.device = config.device
+        self.amp = config.amp and self.device == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp)
+        self.criterion = BCEDiceLoss()
+        self.history: list[dict] = []
+        self.best_score = -1.0
 
-    # ------------------------------------------------------------------
-    # Single step
-    # ------------------------------------------------------------------
+    def _make_scheduler(self, steps_per_epoch: int):
+        total = max(1, self.cfg.num_epochs * steps_per_epoch)
+        warmup = max(1, int(self.cfg.warmup_epochs * steps_per_epoch))
 
-    def _train_step(self, images, texts, ground_truth) -> float:
+        def factor(step: int) -> float:
+            if step < warmup:
+                return (step + 1) / warmup
+            progress = (step - warmup) / max(1, total - warmup)
+            return 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
+
+        return torch.optim.lr_scheduler.LambdaLR(self.optimizer, factor)
+
+    def _step(self, batch) -> float:
         self.model.train()
-        self.optimizer.zero_grad()
-        outputs = self.model(images, texts, ground_truth)
-        outputs["loss"].backward()
-        self.optimizer.step()
-        return outputs["loss"].item()
-
-    # ------------------------------------------------------------------
-    # Epoch loops
-    # ------------------------------------------------------------------
-
-    def _run_train_epoch(self, loader: DataLoader, epoch: int) -> float:
-        total_loss = 0.0
-        for i, batch in enumerate(loader):
-            images       = batch["images"].to(self.device)
-            texts        = batch["texts"].to(self.device)
-            ground_truth = batch["masks"].to(self.device)
-
-            loss = self._train_step(images, texts, ground_truth)
-            total_loss += loss
-
-            if (i + 1) % self.cfg.log_interval == 0:
-                print(f"  [epoch {epoch}] batch {i+1}/{len(loader)}  loss={loss:.4f}")
-
-        return total_loss / len(loader)
+        images = batch["images"].to(self.device, non_blocking=True)
+        texts = batch["texts"].to(self.device, non_blocking=True)
+        masks = batch["masks"].to(self.device, non_blocking=True)
+        self.optimizer.zero_grad(set_to_none=True)
+        with torch.autocast("cuda", dtype=torch.float16, enabled=self.amp):
+            out = self.model(images, texts)
+        loss = self.criterion(out["logits"], masks)
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
+        params = [p for g in self.optimizer.param_groups for p in g["params"]]
+        torch.nn.utils.clip_grad_norm_(params, self.cfg.grad_clip)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        return float(loss.detach())
 
     @torch.no_grad()
-    def _run_val_epoch(self, loader: DataLoader) -> float:
+    def _val_loss(self, loader: DataLoader) -> float:
         self.model.eval()
-        total_loss = 0.0
+        total, n = 0.0, 0
         for batch in loader:
-            images       = batch["images"].to(self.device)
-            texts        = batch["texts"].to(self.device)
-            ground_truth = batch["masks"].to(self.device)
-            outputs = self.model(images, texts, ground_truth)
-            total_loss += outputs["loss"].item()
-        return total_loss / len(loader)
-
-    # ------------------------------------------------------------------
-    # Periodic output saving
-    # ------------------------------------------------------------------
+            with torch.autocast("cuda", dtype=torch.float16, enabled=self.amp):
+                out = self.model(batch["images"].to(self.device), batch["texts"].to(self.device))
+            total += float(self.criterion(out["logits"], batch["masks"].to(self.device))) * len(batch["ids"])
+            n += len(batch["ids"])
+        return total / max(1, n)
 
     @torch.no_grad()
-    def _save_sample_outputs(self, batch: dict, epoch: int, tag: str, out_dir: str):
+    def _save_samples(self, batch: dict, epoch: int, threshold: float):
         self.model.eval()
-        images = batch["images"].to(self.device)
-        texts  = batch["texts"].to(self.device)
-        outputs = self.model(images, texts)
-        pred_masks = outputs["binary_masks"].cpu()
-        gt_masks   = batch["masks"]
-        filenames  = batch["filenames"]
+        with torch.autocast("cuda", dtype=torch.float16, enabled=self.amp):
+            out = self.model(batch["images"].to(self.device), batch["texts"].to(self.device))
+        save_prediction_grid(batch, out, f"{self.cfg.sample_dir}/epoch_{epoch:03d}.png", threshold)
 
-        save_masks_as_images(
-            pred_masks, gt_masks, filenames, epoch,
-            save_dir=out_dir,
-            every_n_epochs=self.cfg.mask_save_interval,
-        )
-        create_mask_visualization_grid(
-            pred_masks, gt_masks, filenames, epoch,
-            save_dir=f"{out_dir}/grids",
-            every_n_epochs=self.cfg.vis_interval,
-        )
-
-    # ------------------------------------------------------------------
-    # Main entry point
-    # ------------------------------------------------------------------
-
-    def fit(
-        self,
-        train_loader: DataLoader,
-        val_loader:   DataLoader,
-        train_sample_batch: dict,
-        val_sample_batch:   dict,
-    ):
-        train_losses, val_losses = [], []
+    def fit(self, train_loader: DataLoader, val_loader: DataLoader, sample_batch: dict | None = None):
+        os.makedirs(self.cfg.checkpoint_dir, exist_ok=True)
+        scheduler = self._make_scheduler(len(train_loader))
+        t0 = time.time()
 
         for epoch in range(1, self.cfg.num_epochs + 1):
-            print(f"\n{'='*20} Epoch {epoch}/{self.cfg.num_epochs} {'='*20}")
+            print(f"\n=== Epoch {epoch}/{self.cfg.num_epochs} ===", flush=True)
+            running, count = 0.0, 0
+            for i, batch in enumerate(train_loader, 1):
+                running += self._step(batch)
+                count += 1
+                scheduler.step()
+                if i % self.cfg.log_interval == 0:
+                    print(f"  batch {i}/{len(train_loader)}  loss {running / count:.4f}  "
+                          f"lr {scheduler.get_last_lr()[0]:.2e}  {time.time() - t0:.0f}s", flush=True)
+            train_loss = running / max(1, count)
 
-            avg_train = self._run_train_epoch(train_loader, epoch)
-            train_losses.append(avg_train)
-            print(f"→ Train loss: {avg_train:.4f}")
+            val_loss = self._val_loss(val_loader)
+            metrics = evaluate_model(self.model, val_loader, self.device, amp=self.amp)
+            best = metrics.best("overall")
+            row = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "val": best,
+                   "val_at_0.5": metrics.summary(0.5), "minutes": (time.time() - t0) / 60}
+            self.history.append(row)
+            print(f"→ train {train_loss:.4f} | val {val_loss:.4f} | thr {best['threshold']:.1f}: "
+                  f"IoU glasses {best['iou_glasses']:.3f}  mask {best['iou_mask']:.3f}  "
+                  f"clean {best['clean_rate']:.3f}  overall {best['overall']:.3f}", flush=True)
 
-            avg_val = self._run_val_epoch(val_loader)
-            val_losses.append(avg_val)
-            print(f"→ Val   loss: {avg_val:.4f}")
+            meta = {"epoch": epoch, "threshold": best["threshold"], "val": best,
+                    "train_config": {k: v for k, v in vars(self.cfg).items()}}
+            save_checkpoint(self.model, f"{self.cfg.checkpoint_dir}/last.pt", **meta)
+            if best["overall"] > self.best_score:
+                self.best_score = best["overall"]
+                save_checkpoint(self.model, f"{self.cfg.checkpoint_dir}/best.pt", **meta)
+                print(f"  new best ({self.best_score:.4f}) → best.pt", flush=True)
 
-            if epoch % self.cfg.save_interval == 0 or epoch == 1:
-                save_model_weights(self.model, epoch, self.cfg.checkpoint_dir)
-                self._save_sample_outputs(
-                    train_sample_batch, epoch, "train", self.cfg.train_sample_dir
-                )
-                self._save_sample_outputs(
-                    val_sample_batch, epoch, "val", self.cfg.val_sample_dir
-                )
-                plot_loss_curve(
-                    train_losses, val_losses,
-                    save_path=f"{self.cfg.losses_dir}/loss_curve_epoch_{epoch}.png",
-                )
+            if sample_batch is not None and (epoch % self.cfg.sample_interval == 0 or epoch == 1):
+                self._save_samples(sample_batch, epoch, best["threshold"])
+            with open(f"{self.cfg.output_dir}/history.json", "w") as fh:
+                json.dump(self.history, fh, indent=2)
+            plot_history(self.history, f"{self.cfg.output_dir}/training_curves.png")
 
-        print("\nTraining complete.")
-        save_model_weights(self.model, self.cfg.num_epochs, self.cfg.checkpoint_dir)
-        plot_loss_curve(
-            train_losses, val_losses,
-            save_path=f"{self.cfg.losses_dir}/loss_curve_final.png",
-        )
+        print(f"\nDone in {(time.time() - t0) / 60:.1f} min. Best val overall {self.best_score:.4f}")
+        return self.history

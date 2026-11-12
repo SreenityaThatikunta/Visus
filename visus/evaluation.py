@@ -1,14 +1,18 @@
 """
-Metrics and prediction <-> ground-truth matching for the CelebA and LFW test sets.
+Metrics.
 
-Predictions are files named `<image stem>_<prompt>_mask_binary.png`, as written by
-`scripts/predict.py`.
+Convention everywhere in Visus v2: a predicted mask is 1/white where the prompted object
+occludes the face. The old LFW / CelebA test masks are the opposite (occlusion black);
+callers say which convention a ground-truth folder uses.
 
-Mask convention (inherited from the dataset): occluded pixels are BLACK (0) and the
-rest of the image is WHITE (255), in both ground truth and predictions. The occlusion
-covers only ~7% of an image, so IoU of the white background is high even for an
-empty prediction. The headline metric here is therefore IoU of the occlusion region;
-background IoU and their mean (two-class mIoU) are reported alongside it.
+Reported numbers
+  * IoU (present)   mean per-image IoU of the occluded region, over (image, prompt) pairs
+                    where the object is there. This is the headline number. An empty
+                    prediction scores 0, so it cannot be gamed by predicting nothing.
+  * clean rate      over pairs where the prompted object is NOT in the image (a mask-only
+                    face asked for "glasses"): share of predictions that are empty
+                    (< 0.5% of the image). Tests that the model listens to the prompt.
+  * overall         mean over all pairs, counting an absent pair as 1 if clean else 0.
 """
 from __future__ import annotations
 
@@ -17,130 +21,195 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cv2
 import numpy as np
+import torch
+
+from .data import KINDS
+
+DEFAULT_THRESHOLDS = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+CLEAN_FRACTION = 0.005
+
+
+# ---------------------------------------------------------------------------
+# In-memory evaluation of a model on a DataLoader
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Metrics:
+    thresholds: tuple[float, ...] = DEFAULT_THRESHOLDS
+    # per threshold -> kind -> list of IoUs on present pairs / clean flags on absent pairs
+    iou: dict = field(default_factory=dict)
+    clean: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        for t in self.thresholds:
+            self.iou[t] = {k: [] for k in KINDS}
+            self.clean[t] = {k: [] for k in KINDS}
+
+    def update(self, probs: torch.Tensor, targets: torch.Tensor, kinds: list[str], present: torch.Tensor):
+        probs, targets = probs.detach().float().cpu(), targets.detach().cpu() > 0.5
+        hw = probs.shape[-1] * probs.shape[-2]
+        for t in self.thresholds:
+            pred = probs > t
+            inter = (pred & targets).flatten(1).sum(1).float()
+            union = (pred | targets).flatten(1).sum(1).float()
+            area = pred.flatten(1).sum(1).float()
+            for i, kind in enumerate(kinds):
+                if bool(present[i]):
+                    self.iou[t][kind].append(float(inter[i] / union[i]) if union[i] > 0 else 1.0)
+                else:
+                    self.clean[t][kind].append(float(area[i] / hw < CLEAN_FRACTION))
+
+    @staticmethod
+    def _mean(xs):
+        return float(np.mean(xs)) if xs else float("nan")
+
+    def summary(self, t: float) -> dict:
+        iou = {k: self._mean(v) for k, v in self.iou[t].items()}
+        clean = {k: self._mean(v) for k, v in self.clean[t].items()}
+        pres = [x for v in self.iou[t].values() for x in v]
+        absn = [x for v in self.clean[t].values() for x in v]
+        return {
+            "threshold": t,
+            "iou_glasses": iou["glasses"], "iou_mask": iou["mask"],
+            "iou": self._mean([iou[k] for k in KINDS if not np.isnan(iou[k])]),
+            "clean_rate": self._mean(absn),
+            "overall": self._mean(pres + absn),
+            "n_present": len(pres), "n_absent": len(absn),
+        }
+
+    def best(self, key: str = "overall") -> dict:
+        rows = [self.summary(t) for t in self.thresholds]
+        rows = [r for r in rows if not np.isnan(r[key])] or rows
+        return max(rows, key=lambda r: r[key])
+
+
+@torch.no_grad()
+def evaluate_model(model, loader, device: str, thresholds=DEFAULT_THRESHOLDS, amp: bool = False) -> Metrics:
+    model.eval()
+    m = Metrics(tuple(thresholds))
+    for batch in loader:
+        with torch.autocast("cuda", dtype=torch.float16, enabled=amp and device == "cuda"):
+            out = model(batch["images"].to(device), batch["texts"].to(device))
+        m.update(out["probs"], batch["masks"], batch["kinds"], batch["present"])
+    return m
+
+
+# ---------------------------------------------------------------------------
+# Legacy test sets (LFW / CelebA subsets from the original project; occlusion = black)
+# ---------------------------------------------------------------------------
+
+def legacy_lfw_pairs(images_dir: str | Path, gt_dir: str | Path) -> list[tuple[str, str, str]]:
+    """images: <Name_0001>_<kind>.jpg ; gt: <gt>/<kind>/<same name>.jpg"""
+    pairs = []
+    for img in sorted(Path(images_dir).glob("*.jpg")):
+        for kind in KINDS:
+            if img.stem.lower().endswith(f"_{kind}"):
+                gt = Path(gt_dir) / kind / img.name
+                if gt.exists():
+                    pairs.append((str(img), kind, str(gt)))
+    return pairs
+
+
+def legacy_celeba_pairs(images_dir: str | Path, gt_dir: str | Path) -> list[tuple[str, str, str]]:
+    """images: <id>_<kind>_pasted.jpg ; gt: <id>_<kind>_pasted_<kind>.jpg (filtered_masks_output)"""
+    pairs = []
+    for img in sorted(Path(images_dir).glob("*_pasted.jpg")):
+        m = re.match(r"(\d+)_(glasses|mask)_pasted$", img.stem)
+        if not m:
+            continue
+        gt = Path(gt_dir) / f"{img.stem}_{m.group(2)}.jpg"
+        if gt.exists():
+            pairs.append((str(img), m.group(2), str(gt)))
+    return pairs
+
+
+# ---------------------------------------------------------------------------
+# File-based evaluation (scripts/evaluate.py): predictions written by scripts/predict.py
+# ---------------------------------------------------------------------------
+
+import cv2  # noqa: E402
 
 MASK_SIZE = (224, 224)
-BINARY_THRESHOLD = 128
 SUFFIX = "_mask_binary"
 
 
-def load_binary_mask(path: str | Path, size: tuple[int, int] | None = MASK_SIZE) -> np.ndarray:
-    """Return 1 for white (background) pixels and 0 for black (occluded) pixels."""
+def load_occlusion_mask(path: str | Path, occluded_is_white: bool, size=MASK_SIZE) -> np.ndarray:
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise FileNotFoundError(f"Could not load: {path}")
     if size is not None and img.shape[::-1] != size:
         img = cv2.resize(img, size, interpolation=cv2.INTER_NEAREST)
-    return (img >= BINARY_THRESHOLD).astype(np.uint8)
+    white = img >= 128
+    return (white if occluded_is_white else ~white).astype(np.uint8)
 
 
 def iou(pred: np.ndarray, gt: np.ndarray) -> float:
-    intersection = np.logical_and(pred, gt).sum()
     union = np.logical_or(pred, gt).sum()
-    if union == 0:
-        return 1.0 if intersection == 0 else 0.0
-    return float(intersection / union)
+    return 1.0 if union == 0 else float(np.logical_and(pred, gt).sum() / union)
 
-
-def dice_loss(pred: np.ndarray, gt: np.ndarray, smooth: float = 1.0) -> float:
-    pred = pred.astype(np.float32).ravel()
-    gt = gt.astype(np.float32).ravel()
-    inter = (pred * gt).sum()
-    return float(1.0 - (2.0 * inter + smooth) / (pred.sum() + gt.sum() + smooth))
-
-
-# ---------------------------------------------------------------------------
-# Ground-truth matching
-# ---------------------------------------------------------------------------
 
 def _parse_prediction(name: str) -> tuple[str, str] | None:
-    """'<stem>_<prompt>_mask_binary' -> (stem, prompt)."""
+    """'<stem>_<prompt>_mask_binary' -> (stem, kind)."""
     name = name.lower()
-    for prompt in ("glasses", "mask"):
+    for prompt, kind in (("glasses", "glasses"), ("face-mask", "mask"), ("mask", "mask")):
         tail = f"_{prompt}{SUFFIX}"
         if name.endswith(tail):
-            return name[: -len(tail)], prompt
+            return name[: -len(tail)], kind
     return None
 
 
 def build_gt_index(gt_dir: str | Path, dataset: str) -> dict:
     """
-    celeba: `<gt_dir>/{glasses,mask}/<id>.jpg`      -> key (id, prompt)
-    lfw:    `<gt_dir>/{glasses,mask}/<Name_0001_prompt>.jpg` -> key lowercase stem
+    lfw:    <gt>/{glasses,mask}/<Name_0001_kind>.jpg          -> key: lowercase stem
+    celeba: <gt>/<id>_<kind>_pasted_<kind>.jpg (or <gt>/<kind>/<id>.jpg) -> key: (id, kind)
     """
     index = {}
-    # os.walk with followlinks so symlinked dataset folders work
-    files = [Path(root) / n for root, _, names in os.walk(gt_dir, followlinks=True) for n in names]
+    files = [Path(r) / n for r, _, ns in os.walk(gt_dir, followlinks=True) for n in ns]
     for f in files:
         if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
             continue
         if dataset == "celeba":
-            index[(f.stem, f.parent.name)] = f
+            m = re.match(r"(\d+)_(glasses|mask)_pasted_\2$", f.stem)
+            if m:
+                index[(m.group(1), m.group(2))] = f
+            elif f.parent.name in KINDS:
+                index[(f.stem, f.parent.name)] = f
         else:
             index[f.stem.lower()] = f
     return index
 
 
-def match_gt(pred_path: Path, gt_index: dict, dataset: str) -> tuple[Path, str] | None:
-    parsed = _parse_prediction(pred_path.stem)
-    if parsed is None:
-        return None
-    stem, prompt = parsed
-    if dataset == "celeba":
-        m = re.match(r"(\d+)", stem)
-        key = (m.group(1), prompt) if m else None
-    else:
-        key = stem
-    gt = gt_index.get(key)
-    return (gt, prompt) if gt is not None else None
-
-
-def _per_prompt():
-    return {"glasses": [], "mask": []}
-
-
 @dataclass
-class EvalResult:
-    ious: dict[str, list[float]] = field(default_factory=_per_prompt)      # occlusion IoU
-    bg_ious: dict[str, list[float]] = field(default_factory=_per_prompt)   # background IoU
-    dice: dict[str, list[float]] = field(default_factory=_per_prompt)      # occlusion Dice loss
+class FileEvalResult:
+    ious: dict = field(default_factory=lambda: {k: [] for k in KINDS})
 
-    @staticmethod
-    def _mean(d: dict, prompt: str | None) -> float:
-        vals = d[prompt] if prompt else d["glasses"] + d["mask"]
+    def miou(self, kind: str | None = None) -> float:
+        vals = self.ious[kind] if kind else self.ious["glasses"] + self.ious["mask"]
         return float(np.mean(vals)) if vals else float("nan")
-
-    def miou(self, prompt: str | None = None) -> float:
-        """Mean IoU of the occluded region."""
-        return self._mean(self.ious, prompt)
-
-    def background_iou(self, prompt: str | None = None) -> float:
-        return self._mean(self.bg_ious, prompt)
-
-    def two_class_miou(self, prompt: str | None = None) -> float:
-        return (self.miou(prompt) + self.background_iou(prompt)) / 2
-
-    def mean_dice(self, prompt: str | None = None) -> float:
-        return self._mean(self.dice, prompt)
 
     @property
     def count(self) -> int:
-        return len(self.ious["glasses"]) + len(self.ious["mask"])
+        return sum(len(v) for v in self.ious.values())
 
 
-def evaluate_predictions(pred_dir: str | Path, gt_dir: str | Path, dataset: str) -> EvalResult:
-    gt_index = build_gt_index(gt_dir, dataset)
-    result = EvalResult()
+def evaluate_predictions(pred_dir, gt_dir, dataset: str, gt_occluded_is_white: bool = False) -> FileEvalResult:
+    """Predictions are occlusion = white. Old LFW/CelebA ground truth is occlusion = black."""
+    index = build_gt_index(gt_dir, dataset)
+    result = FileEvalResult()
     for pred_path in sorted(Path(pred_dir).rglob(f"*{SUFFIX}.png")):
-        match = match_gt(pred_path, gt_index, dataset)
-        if match is None:
+        parsed = _parse_prediction(pred_path.stem)
+        if parsed is None:
             continue
-        gt_path, prompt = match
-        pred_bg = load_binary_mask(pred_path)
-        gt_bg = load_binary_mask(gt_path)
-        pred_occ, gt_occ = 1 - pred_bg, 1 - gt_bg
-        result.ious[prompt].append(iou(pred_occ, gt_occ))
-        result.bg_ious[prompt].append(iou(pred_bg, gt_bg))
-        result.dice[prompt].append(dice_loss(pred_occ, gt_occ))
+        stem, kind = parsed
+        if dataset == "celeba":
+            m = re.match(r"(\d+)", stem)
+            key = (m.group(1), kind) if m else None
+        else:
+            key = stem
+        gt = index.get(key)
+        if gt is None:
+            continue
+        pred = load_occlusion_mask(pred_path, occluded_is_white=True)
+        result.ious[kind].append(iou(pred, load_occlusion_mask(gt, gt_occluded_is_white)))
     return result

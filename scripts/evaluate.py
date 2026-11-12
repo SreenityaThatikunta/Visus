@@ -1,99 +1,106 @@
 """
-Compute occlusion IoU, background IoU and Dice loss for predicted masks.
+Evaluate a checkpoint.
 
-Single run:
-    python scripts/evaluate.py --dataset lfw --pred outputs/lfw --gt data/lfw/gt
+Score a checkpoint directly (recommended):
+    python scripts/evaluate.py --checkpoint runs/v2/checkpoints/best.pt \
+        --data data/visus_occlusion_v1 --split test \
+        --lfw-images data/legacy/lfw/images --lfw-gt data/legacy/lfw/gt \
+        --celeba-images data/legacy/celeba/images --celeba-gt data/legacy/celeba/gt \
+        --json results.json
 
-Compare several checkpoints (one sub-folder of predictions per checkpoint,
-folder names containing `epoch_<N>`), and save plots:
-    python scripts/evaluate.py --dataset celeba --pred outputs/celeba_sweep \
-                               --gt data/celeba/gt --sweep --plots docs/figures
+  --data/--split        the synthetic test split: IoU (object present), clean rate
+                        (object absent: is the prediction empty?) and overall
+  --lfw-* / --celeba-*  the original project's LFW / CelebA test subsets
+                        (ground truth: occlusion black, coarse landmark polygons)
 
-Ground-truth layout: `<gt>/glasses/...` and `<gt>/mask/...`
-  celeba: files named by CelebA id, e.g. `glasses/002037.jpg`
-  lfw:    files named like the input image, e.g. `mask/Aaron_Guiel_0001_mask.jpg`
+Every table also shows the "empty mask" baseline (predict nothing).
+The threshold is the one stored in the checkpoint (chosen on validation) unless --threshold.
+
+Score prediction files written by scripts/predict.py:
+    python scripts/evaluate.py --pred outputs/lfw --gt data/legacy/lfw/gt --dataset lfw
 """
 import argparse
+import json
 import os
-import re
 import sys
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from visus.evaluation import evaluate_predictions  # noqa: E402
+import torch  # noqa: E402
+
+from visus.checkpoint import load_model  # noqa: E402
+from visus.config import get_device  # noqa: E402
+from visus.data import OcclusionDataset, PairDataset, make_loader  # noqa: E402
+from visus.evaluation import (Metrics, evaluate_model, evaluate_predictions,  # noqa: E402
+                              legacy_celeba_pairs, legacy_lfw_pairs)
 
 
-def epoch_of(name: str):
-    m = re.search(r"epoch_(\d+)", name)
-    return int(m.group(1)) if m else None
+def empty_baseline(loader) -> dict:
+    m = Metrics((0.5,))
+    for b in loader:
+        m.update(torch.zeros_like(b["masks"]), b["masks"], b["kinds"], b["present"])
+    return m.summary(0.5)
 
 
-def print_row(name, r):
-    print(f"{name:<40} {r.miou('glasses'):>8.4f} {r.miou('mask'):>8.4f} {r.miou():>8.4f} "
-          f"{r.background_iou():>8.4f} {r.two_class_miou():>8.4f} {r.mean_dice():>8.4f} {r.count:>5}")
-
-
-def plot_sweep(results: dict, out_dir: Path, dataset: str):
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    rows = sorted((epoch_of(n), r) for n, r in results.items() if epoch_of(n) is not None)
-    if not rows:
-        return
-    epochs = [e for e, _ in rows]
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for prompt, marker in (("glasses", "o"), ("mask", "s"), (None, "D")):
-        ax.plot(epochs, [r.miou(prompt) for _, r in rows], marker=marker,
-                linewidth=2, label=(prompt or "overall").capitalize())
-    ax.set(xlabel="Epoch", ylabel="Occlusion IoU", title=f"Occlusion IoU vs. epoch ({dataset})", ylim=(0, 1))
-    ax.grid(alpha=0.3)
-    ax.legend()
-    fig.savefig(out_dir / f"miou_vs_epoch_{dataset}.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.plot(epochs, [r.mean_dice() for _, r in rows], marker="o", linewidth=2)
-    ax.set(xlabel="Epoch", ylabel="Dice loss", title=f"Dice loss vs. epoch ({dataset})")
-    ax.grid(alpha=0.3)
-    fig.savefig(out_dir / f"dice_vs_epoch_{dataset}.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Plots saved to {out_dir}")
+def fmt(name, r):
+    def f(x):
+        return "   -  " if x != x else f"{x:6.3f}"
+    return (f"{name:<22} {f(r['iou_glasses'])} {f(r['iou_mask'])} {f(r['iou'])} "
+            f"{f(r['clean_rate'])} {f(r['overall'])}   n={r['n_present']}+{r['n_absent']}")
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dataset", choices=("celeba", "lfw"), required=True)
-    p.add_argument("--pred", required=True, help="folder of *_mask_binary.png predictions")
-    p.add_argument("--gt", required=True, help="ground-truth folder with glasses/ and mask/")
-    p.add_argument("--sweep", action="store_true", help="--pred holds one sub-folder per checkpoint")
-    p.add_argument("--plots", default=None, help="save sweep plots to this folder")
+    p.add_argument("--checkpoint")
+    p.add_argument("--threshold", type=float, default=None)
+    p.add_argument("--data", help="synthetic dataset folder")
+    p.add_argument("--split", default="test")
+    p.add_argument("--lfw-images"), p.add_argument("--lfw-gt")
+    p.add_argument("--celeba-images"), p.add_argument("--celeba-gt")
+    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--device", default=None)
+    p.add_argument("--json", help="also write results here")
+    # file mode
+    p.add_argument("--pred"), p.add_argument("--gt"), p.add_argument("--dataset", choices=("lfw", "celeba"))
+    p.add_argument("--gt-white", action="store_true", help="ground truth marks occlusion in white")
     a = p.parse_args()
 
-    pred = Path(a.pred)
-    runs = sorted(d for d in pred.iterdir() if d.is_dir()) if a.sweep else [pred]
+    if a.pred:
+        r = evaluate_predictions(a.pred, a.gt, a.dataset, gt_occluded_is_white=a.gt_white)
+        print(f"occlusion IoU  glasses {r.miou('glasses'):.4f}  mask {r.miou('mask'):.4f}  "
+              f"all {r.miou():.4f}  (n={r.count})")
+        return
 
-    print("IoU of the occluded region (glasses / mask / both), background IoU, two-class mIoU, Dice loss")
-    print(f"{'run':<40} {'glasses':>8} {'mask':>8} {'occ-IoU':>8} {'bg-IoU':>8} {'2cls':>8} {'dice':>8} {'n':>5}")
-    print("-" * 100)
-    results = {}
-    for run in runs:
-        r = evaluate_predictions(run, a.gt, a.dataset)
-        if r.count == 0:
-            print(f"{run.name:<40} no matching predictions")
-            continue
-        results[run.name] = r
-        print_row(run.name, r)
+    device = get_device(a.device)
+    model, state = load_model(a.checkpoint, device)
+    thr = a.threshold if a.threshold is not None else state.get("threshold", 0.1 if "model_config" not in state else 0.5)
+    print(f"threshold {thr}")
 
-    if a.sweep and results:
-        best = max(results, key=lambda n: results[n].miou())
-        print(f"\nBest: {best}  (occlusion IoU {results[best].miou():.4f})")
-        if a.plots:
-            plot_sweep(results, Path(a.plots), a.dataset)
+    sets = {}
+    if a.data:
+        sets[f"synthetic {a.split}"] = OcclusionDataset(a.data, a.split)
+    if a.lfw_images:
+        sets["LFW (legacy)"] = PairDataset(legacy_lfw_pairs(a.lfw_images, a.lfw_gt), occluded_is_white=False)
+    if a.celeba_images:
+        sets["CelebA (legacy)"] = PairDataset(legacy_celeba_pairs(a.celeba_images, a.celeba_gt), occluded_is_white=False)
+
+    results = {"checkpoint": a.checkpoint, "threshold": thr, "sets": {}}
+    print(f"\n{'':<22} {'IoU-gl':>6} {'IoU-mk':>6} {'IoU':>6} {'clean':>6} {'overall':>6}")
+    for name, ds in sets.items():
+        loader = make_loader(ds, a.batch_size, shuffle=False, num_workers=a.workers)
+        m = evaluate_model(model, loader, device, thresholds=(thr,), amp=device == "cuda")
+        r, base = m.summary(thr), empty_baseline(loader)
+        print(f"-- {name} ({len(ds)} pairs)")
+        print(fmt("  model", r))
+        print(fmt("  empty-mask baseline", base))
+        results["sets"][name] = {"model": r, "empty_baseline": base}
+
+    if a.json:
+        with open(a.json, "w") as fh:
+            json.dump(results, fh, indent=2)
+        print(f"\nwrote {a.json}")
+    model.cleanup()
 
 
 if __name__ == "__main__":
