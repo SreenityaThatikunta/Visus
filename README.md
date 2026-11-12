@@ -175,9 +175,9 @@ results/               raw JSON of every number in this README and the report
 docs/report/           report.pdf and its LaTeX source
 ```
 
-## Authors
+## Author
 
-**Arpita Deshmukh** and **Sreenitya Thatikunta**, Indian Institute of Technology Jodhpur. Started as a Computer Vision course project (April 2026) and rebuilt as v2 in November 2026.
+**Sreenitya Thatikunta**, Indian Institute of Technology Jodhpur. v1 started as a two-person Computer Vision course project (April 2026). v2, covering the dataset generator, model fixes, training, evaluation and report, was rebuilt in November 2026.
 
 ## Acknowledgements
 
