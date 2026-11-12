@@ -19,22 +19,23 @@ Numbers are from the [project report](docs/report/report.pdf). Ground-truth mask
 
 ```mermaid
 flowchart LR
-    I[Face image] --> V[CLIP ViT-B/32<br/>image encoder]
+    I[Face image] --> V[CLIP ViT-B/32<br/>image encoder<br/>last 3 blocks fine-tuned]
     V --> A[CLS→patch attention<br/>last block, 7×7]
     A --> U[Average heads<br/>+ upsample to 224×224]
     P["Prompt: 'glasses'"] --> T[CLIP text encoder<br/>frozen]
-    T --> F[Text attention features<br/>3 values, one per layer]
+    T --> F[Text embedding<br/>512-d]
     U --> H[Segmentation head<br/>3 × Conv → CMAF]
+    I --> H
     F --> H
-    H --> M[1×1 conv + sigmoid<br/>→ mask]
+    H --> M[1×1 conv + sigmoid<br/>→ occlusion mask]
 ```
 
-1. **Visual prior.** A forward hook on CLIP's last vision block reconstructs the attention matrix. The CLS token's attention over the 7×7 patch grid is averaged across heads and upsampled to image size.
-2. **Text conditioning.** Hooks on the last 3 text blocks collect CLS-to-token attention, compressed into one value per layer.
-3. **Cross-Modal Attention Fusion (CMAF).** At each of three refinement stages, spatial vision features act as queries and the projected text feature as key/value in multi-head attention; the result is concatenated with the vision features and fused by convolution.
-4. **Training.** Dice loss, AdamW (lr 1e-4, weight decay 0.01), batch size 24, 50 epochs. The CLIP text encoder is frozen.
+1. **Visual prior.** A forward hook on CLIP's last vision block recomputes its attention (on the LayerNorm-ed input, as CLIP does). The CLS token's attention over the 7×7 patch grid is averaged across heads and upsampled to image size. Gradients flow through it, so the last 3 vision blocks fine-tune.
+2. **Text conditioning.** The prompt is encoded by CLIP's frozen text encoder into a 512-d embedding.
+3. **Cross-Modal Attention Fusion (CMAF).** The head takes the attention map plus the RGB image. At each of three refinement stages, spatial features act as queries and the projected text embedding as key/value in multi-head attention; the result is concatenated with the vision features and fused by convolution.
+4. **Training.** BCE + Dice loss, AdamW (head lr 3e-4, CLIP blocks 1e-5, weight decay 0.01), warmup + cosine schedule, mixed precision, flips/crops/rotation/colour jitter. A quarter of the training prompts name an object that is *not* in the image, with an empty target, so the model learns to follow the prompt. The checkpoint and the mask threshold are both chosen on the validation split.
 
-The full write-up, including the synthetic dataset pipeline, is in [`docs/report/report.pdf`](docs/report/report.pdf).
+This is the v2 model (current code). The v1 release `visus_epoch50.pt` used one-number-per-layer text features, an attention map without the RGB image, and no CLIP fine-tuning; `visus.checkpoint.load_model` still loads it. The original write-up is in [`docs/report/report.pdf`](docs/report/report.pdf).
 
 ## Quick start
 
@@ -45,69 +46,77 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Download the trained weights (`visus_epoch50.pt`, about 31 MB) from the [Releases](../../releases) page into `checkpoints/`, then run it on the bundled samples:
+Download trained weights from the [Releases](../../releases) page into `checkpoints/`, then run them on the bundled samples:
 
 ```bash
 python scripts/predict.py --checkpoint checkpoints/visus_epoch50.pt --input assets/samples --output outputs/demo
 ```
 
-For each image this writes `<name>_<prompt>_mask_binary.png` and a `<name>_<prompt>_viz.png` figure (input, CLIP attention, mask). The prompt is read from the filename (`..._glasses.jpg`, `..._mask.jpg`); use `--prompt "sunglasses"` to set it yourself. It runs on CUDA, Apple Silicon (MPS) or CPU, picked automatically, at about 5 images/s on a laptop CPU.
+For each image this writes `<name>_<prompt>_mask_binary.png` (occluded region in white) and a `<name>_<prompt>_viz.png` figure (input, CLIP attention, mask overlay). The prompt is read from the filename (`..._glasses.jpg`, `..._mask.jpg`); use `--prompt "sunglasses"` to set it yourself. The threshold stored in the checkpoint is used unless you pass `--threshold`. It runs on CUDA, Apple Silicon (MPS) or CPU, picked automatically.
 
 ## Training
 
 ```bash
-python scripts/train.py --images data/celeba_occluded/images --masks data/celeba_occluded/masks --epochs 50
+python scripts/train.py --data data/visus_occlusion_v1 --epochs 20
 ```
 
-Checkpoints, sample predictions and loss curves go to `runs/default/` (change with `--output`). Defaults live in [`visus/config.py`](visus/config.py); `python scripts/train.py --help` lists the overrides. The loader pairs `images/<name>.jpg` with `masks/<name>_glasses.png` or `masks/<name>_mask.png` (the names `generate_gt_masks.py` writes), and picks a random prompt from a small synonym set for each sample.
+`--data` is a folder built by the dataset generator (below): `images/`, `masks/<id>_glasses.png`, `masks/<id>_mask.png`, `meta.csv`. Output goes to `runs/default/` (change with `--output`): `checkpoints/best.pt` (best on validation) and `last.pt`, `history.json`, `training_curves.png` and sample-prediction grids. `python scripts/train.py --help` lists the options, including the ablation switches `--trainable-blocks 0` (frozen CLIP), `--text-mode attention` (v1 text features) and `--no-rgb`.
+
+### On Kaggle
+
+Training and dataset generation were run on free Kaggle machines with the [Kaggle CLI](https://github.com/Kaggle/kaggle-api); [`kaggle/push.sh`](kaggle/push.sh) pushes each job:
+
+```bash
+KAGGLE_USERNAME=you kaggle/push.sh generate   # build the occlusion dataset (CPU)
+KAGGLE_USERNAME=you kaggle/push.sh code       # upload this repo as a private dataset
+KAGGLE_USERNAME=you kaggle/push.sh train      # sanity checks, training, evaluation (GPU)
+```
+
+The training job ([`scripts/kaggle_train.py`](scripts/kaggle_train.py)) first checks that gradients reach the unfrozen CLIP blocks and that six images can be overfit, then trains and evaluates.
 
 ## Evaluation
 
 ```bash
-# predict on a test set, then score it
-python scripts/predict.py --checkpoint checkpoints/visus_epoch50.pt --input data/lfw/occluded --output outputs/lfw --no-figures
-python scripts/evaluate.py --dataset lfw --pred outputs/lfw --gt data/lfw/gt
-
-# compare every saved checkpoint (one prediction folder per checkpoint) and plot the trend
-python scripts/evaluate.py --dataset celeba --pred outputs/celeba_sweep --gt data/celeba/gt --sweep --plots docs/figures
+python scripts/evaluate.py --checkpoint runs/default/checkpoints/best.pt \
+    --data data/visus_occlusion_v1 --split test \
+    --lfw-images data/legacy/lfw/images --lfw-gt data/legacy/lfw/gt
 ```
 
-The ground-truth folder holds `glasses/` and `mask/` sub-folders. The script prints IoU per occlusion type, background IoU and Dice loss.
+It reports, per test set, next to an "empty mask" baseline that predicts nothing:
+
+- **IoU**: mean per-image IoU of the occluded region, for glasses and face masks, over images where the prompted object is present. An empty prediction scores 0.
+- **Clean rate**: when the prompt names an object that is *not* in the image, the share of predictions that are (nearly) empty.
+- **Overall**: both together, one number per test set.
+
+`--lfw-*` / `--celeba-*` add the small LFW and CelebA test subsets from the original project (their masks mark the occlusion in black and are coarse landmark polygons).
 
 ## Dataset
 
-There is no public dataset with pixel masks for glasses and face masks, so the training data is synthetic, built from [CelebA](https://mmlab.ie.cuhk.edu.hk/projects/CelebA.html):
+There is no public dataset with pixel masks for glasses and face masks, so the training data is synthetic. [`scripts/data/kaggle_generate_occlusions.py`](scripts/data/kaggle_generate_occlusions.py) takes 30,000 face photos from CelebA-HQ and, using dlib's 68 facial landmarks:
 
-![Dataset pipeline](docs/report/figures/dataset_pipeline.png)
+- **face masks**: warps [MaskTheFace](https://github.com/aqeelanwar/MaskTheFace) templates (surgical, N95, KN95, cloth) with its textures and colours onto the face;
+- **glasses**: draws sunglasses and glasses procedurally: round, rectangular, wayfarer, aviator and cat-eye frames with opaque, mirrored, tinted or clear lenses.
 
-```bash
-# 1. overlay glasses using dlib's 68-point landmarks
-python scripts/data/apply_glasses.py --input data/celeba/raw --output data/celeba/occluded \
-    --overlay glasses.png --predictor shape_predictor_68_face_landmarks.dat
-# 2. face masks: use MaskTheFace (https://github.com/aqeelanwar/MaskTheFace)
-# 3. ground-truth masks from MediaPipe Face Mesh
-python scripts/data/generate_gt_masks.py --input data/celeba/occluded --output data/celeba/masks
-```
+40% of faces get glasses, 40% a face mask, 20% both. Because the occlusions are pasted by the script, the labels are exact pixel masks, one per object. The split is 25,215 train / 1,484 val / 2,969 test images, and five mask textures appear only in the test split.
 
-Step 1 needs `pip install dlib cvzone`, a transparent PNG of glasses, and [`shape_predictor_68_face_landmarks.dat`](http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2). Step 3 needs `pip install mediapipe`.
-
-Datasets are not included in this repository: CelebA is licensed for non-commercial research only. The sample images in `assets/samples/` come from [LFW](https://vis-www.cs.umass.edu/lfw/) with synthetic occlusions added.
+Datasets are not included in this repository: CelebA is licensed for non-commercial research only. The sample images in `assets/samples/` come from [LFW](https://vis-www.cs.umass.edu/lfw/) with synthetic occlusions added. The older dataset tools (`scripts/data/apply_glasses.py`, `generate_gt_masks.py`) built the v1 data.
 
 ## Repository layout
 
 ```
 visus/                 the Python package
-├── models/            attention extractors, CMAF fusion, segmentation head, full model
-├── data.py            dataset + dataloaders (seeded train/val split)
-├── trainer.py         training loop, checkpointing, sample grids
+├── models/            attention + text extractors, CMAF fusion, segmentation head, full model
+├── data.py            datasets (synthetic splits, legacy test sets) and augmentation
+├── trainer.py         training loop, best-checkpoint selection, sample grids
 ├── inference.py       Predictor: checkpoint → mask for an image + prompt
-├── evaluation.py      IoU / Dice metrics and ground-truth matching
-├── checkpoint.py      save / load (reads the released checkpoint format)
-├── losses.py          Dice loss
+├── evaluation.py      IoU / clean-rate metrics, legacy test-set matching
+├── checkpoint.py      save / load (v2 and the legacy v1 release)
+├── losses.py          BCE + Dice
 └── config.py          defaults + device auto-detection
-scripts/               train.py · predict.py · evaluate.py · data/ (dataset tools)
+scripts/               train.py · predict.py · evaluate.py · kaggle_train.py · data/ (dataset tools)
+kaggle/                Kaggle job configs and push.sh
 docs/report/           report.pdf and its LaTeX source
-docs/figures/          evaluation plots across checkpoints
+docs/figures/          evaluation plots of the v1 checkpoints
 assets/                README figure and sample images
 ```
 
