@@ -4,6 +4,7 @@
 #   KAGGLE_USERNAME=you kaggle/push.sh generate   # build the occlusion dataset (CPU, ~3.5 h)
 #   KAGGLE_USERNAME=you kaggle/push.sh code       # upload this repo as the private dataset <you>/visus-code
 #   KAGGLE_USERNAME=you kaggle/push.sh train      # sanity checks + training + evaluation (GPU)
+#   KAGGLE_USERNAME=you kaggle/push.sh ablate     # analysis figures + ablations (GPU, after train)
 #
 # Needs the Kaggle CLI (pip install kaggle) and an API token in ~/.kaggle/.
 # `train` reads the code from the visus-code dataset, so run `code` first after changing code.
@@ -33,6 +34,10 @@ case "${1:-}" in
     render "$ROOT/kaggle/train/kernel-metadata.json" "$TMP/kernel-metadata.json"
     cp "$ROOT/scripts/kaggle_train.py" "$TMP/"
     kaggle kernels push -p "$TMP" ;;
+  ablate)
+    render "$ROOT/kaggle/ablate/kernel-metadata.json" "$TMP/kernel-metadata.json"
+    cp "$ROOT/scripts/kaggle_ablation.py" "$TMP/"
+    kaggle kernels push -p "$TMP" ;;
   *)
-    sed -n '2,10p' "$0"; exit 1 ;;
+    sed -n '2,11p' "$0"; exit 1 ;;
 esac
