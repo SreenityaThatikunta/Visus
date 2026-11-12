@@ -9,156 +9,135 @@
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{caption}
+\usepackage{subcaption}
 \usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{float}
 \usepackage{tikz}
 \usetikzlibrary{positioning,arrows.meta,fit,backgrounds}
 \usepackage[colorlinks=true,linkcolor=black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
 
 \setlist{itemsep=2pt,topsep=4pt}
 \graphicspath{{figures/}}
+\captionsetup{font=small,labelfont=bf}
 
-\title{\textbf{Visus: Text-Guided Face Occlusion Segmentation\\using CLIP-based Cross-Modal Attention Fusion}}
+\title{\textbf{Visus: Text-Guided Face Occlusion Segmentation\\with CLIP Attention and Cross-Modal Fusion}}
 \author{
   Arpita Deshmukh \qquad Sreenitya Thatikunta\\[4pt]
-  \normalsize Indian Institute of Technology Jodhpur
+  \normalsize Indian Institute of Technology Jodhpur\\[2pt]
+  \normalsize\url{https://github.com/SreenityaThatikunta/Visus}
 }
-\date{Computer Vision course project \quad\textbullet\quad April 2026}
+\date{Computer Vision course project, April 2026 \quad\textbullet\quad revised November 2026 (v2)}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Segmentation of facial occlusions (e.g., glasses and face masks) is a key challenge in building
-robust face analysis and face detection systems. Existing approaches are mostly vision-only, which
-limits their ability to capture high-level semantic concepts that are naturally expressed in language.
-In this work, we introduce a cross-modal attention framework that integrates visual and textual
-representations to improve fine-grained occlusion segmentation.
-
-Our approach leverages a pre-trained CLIP (Contrastive Language--Image Pre-training) model to bridge
-the gap between pixel-level visual features and semantic descriptions that come from text.
-Specifically, we reinterpret transformer attention maps as spatial priors and align them with
-text-derived representations, which helps the model localise semantically meaningful regions
-corresponding to occlusions. We propose a Cross-Modal Attention Fusion mechanism that facilitates
-structured interaction between visual attention and language embeddings, allowing the model to refine
-predictions using complementary cross-modal cues. This design improves the model's ability to segment
-the image in challenging cases where visual signals alone are insufficient.
+Given a face image and a text prompt such as ``glasses'' or ``face mask'', Visus returns a pixel mask
+of the region the named object covers. It uses CLIP~\cite{radford2021clip}'s own attention as a
+visual prior: the CLS-to-patch attention of the last vision block marks roughly where the object is.
+A lightweight segmentation head then refines this prior, using the CLIP text embedding of the prompt
+through cross-modal attention. Because no public dataset has pixel labels for these occlusions, we
+build one: 29,668 CelebA-HQ faces with landmark-aligned face masks and procedurally drawn glasses,
+where the labels are exact because the occlusions are composited by our own code. On a held-out
+test split, which uses mask textures never seen in training, the model reaches an occlusion IoU of
+0.952 for glasses and 0.979 for face masks. When asked for the occluder that is not in the image
+(``glasses'' on a mask-only face), it correctly returns an empty mask 99.7\% of the time. Ablations
+show that fine-tuning CLIP, feeding the image to the head and using the full text embedding each
+matter. This report also describes the first
+version of the project (v1) and the bugs we found in it. Its training, its metric and its data all had
+problems, and its headline score did not measure what it claimed to.
 \end{abstract}
 
 % ---------------------------------------------------------------------------
 \section{Introduction}
 
-Face analysis is a fundamental component of applications such as biometric authentication and
-surveillance. A persistent challenge in these systems is handling facial occlusions, where regions of
-the face are partially covered by objects such as eyeglasses or masks. Such occlusions corrupt the
-feature representations extracted by face encoders and can significantly degrade recognition
-performance. Accurately localising occluded regions as binary masks can therefore serve as an
-important pre-processing step for improving robustness.
+Face analysis systems such as recognition, landmarking and expression analysis degrade when part of
+the face is hidden. A segmentation mask of the occluded region lets a downstream model ignore or
+inpaint those pixels. Occluders are also semantic categories whose names carry strong priors about
+shape and position: ``glasses'' sit across the eyes and ``face mask'' covers the nose and mouth.
+Vision--language models such as CLIP already connect these words to image content, so we ask how far a
+small head on top of CLIP can go, given the name of the occluder as a prompt.
 
-Most existing approaches treat occlusion segmentation as a purely visual task. However, this overlooks
-the fact that occlusions are inherently semantic: categories such as ``glasses'' or ``face mask'' carry
-strong priors about shape, appearance, and spatial location. These priors are naturally encoded in
-language and can complement visual features, especially in settings with limited supervision. Recent
-vision--language models such as CLIP~\cite{radford2021clip} learn aligned representations across
-modalities, providing a natural foundation for incorporating such semantic understanding into dense
-prediction tasks.
-
-In this work, we propose a framework that uses vision--language alignment to improve facial occlusion
-segmentation. Our key idea is to reinterpret internal attention representations from a pre-trained
-multimodal model as spatial priors, and to refine them through structured interaction with
-text-derived features. This enables the model to incorporate high-level semantic guidance while
-preserving fine-grained spatial detail.
+\paragraph{Contributions.}
+\begin{itemize}
+  \item A text-conditioned segmenter that turns CLIP's CLS-to-patch attention into a spatial prior and
+  refines it with \emph{Cross-Modal Attention Fusion} (CMAF) blocks driven by the prompt embedding
+  (Section~\ref{sec:method}).
+  \item A synthetic occlusion dataset with \emph{exact} pixel labels, a held-out appearance split, and
+  ``negative'' prompts that name an absent object (Section~\ref{sec:data}).
+  \item An evaluation protocol that cannot be gamed by predicting nothing, or by ignoring the prompt
+  (Section~\ref{sec:eval}).
+  \item Ablations, per-category and prompt-robustness analyses, and a failure analysis
+  (Section~\ref{sec:results}).
+  \item An account of what was wrong with v1 and how each problem was found
+  (Section~\ref{sec:v1}).
+\end{itemize}
 
 % ---------------------------------------------------------------------------
 \section{Related Work}
 
 \paragraph{Transformer-based segmentation.}
-Early work on image segmentation relied on fully convolutional networks (FCNs)~\cite{long2015fcn},
-which enabled pixel-wise prediction directly from convolutional features. This idea was improved by
-encoder--decoder architectures such as U-Net~\cite{ronneberger2015unet}, which combine low-level and
-high-level features for better localisation. More recently, Vision Transformers
-(ViT)~\cite{dosovitskiy2021vit} have shown that attention-based models can match or exceed
-convolutional networks on visual tasks. Methods such as SETR~\cite{zheng2021setr} and
-Segmenter~\cite{strudel2021segmenter} extend Vision Transformers to segmentation by operating on
-sequences of patch tokens with dedicated decoders. We also use ViT-based features, but instead of
-building a full decoder we use CLS-token attention maps as a simple spatial cue.
+Fully convolutional networks~\cite{long2015fcn} and encoder--decoders such as
+U-Net~\cite{ronneberger2015unet} established dense prediction from CNN features. Vision Transformers
+(ViT)~\cite{dosovitskiy2021vit} were extended to segmentation by SETR~\cite{zheng2021setr} and
+Segmenter~\cite{strudel2021segmenter} with dedicated decoders. We also use ViT features, but take the
+CLS-token attention map as a coarse cue instead of building a full decoder.
 
-\paragraph{Attention maps as segmentation cues.}
-Attention maps from transformers often highlight semantically meaningful regions.
-DINO~\cite{caron2021dino} showed that self-supervised Vision Transformers exhibit emergent object
-localisation, with attention maps roughly corresponding to foreground objects despite the absence of
-labels. Chefer et al.~\cite{chefer2021interpretability} proposed relevance-based attribution for
-transformers, which can be adapted to obtain spatial importance maps, and
-Grad-CAM~\cite{selvaraju2017gradcam} uses gradients to localise important regions in CNNs. Inspired
-by these works, we use the CLS-to-patch attention of the final transformer layer as a coarse estimate
-of object regions, which is then refined by a lightweight segmentation module.
+\paragraph{Attention maps as localisation cues.}
+DINO~\cite{caron2021dino} showed that self-supervised ViT attention roughly segments foreground
+objects, Chefer et al.~\cite{chefer2021interpretability} derived relevance maps for transformers, and
+Grad-CAM~\cite{selvaraju2017gradcam} localises with gradients. We use the last block's CLS-to-patch
+attention as a learnable prior: unlike these post-hoc methods, the blocks producing it are fine-tuned.
 
-\paragraph{Vision--language models for localisation.}
-CLIP~\cite{radford2021clip} learns a shared embedding space for images and text, enabling zero-shot
-classification and retrieval. CLIPSeg~\cite{luddecke2022clipseg} adds a text-conditioned decoder for
-language-guided segmentation; GroupViT~\cite{xu2022groupvit} and OVSeg~\cite{liang2023ovseg} extend
-this to open-vocabulary segmentation, and Grounded-SAM~\cite{ren2024groundedsam} combines grounding
-models with segmentation systems for text-driven queries. In contrast, our method is simpler and more
-focused: rather than relying on heavy decoders, we fuse text features with visual attention maps using
-lightweight modules.
+\paragraph{Vision--language segmentation.}
+CLIPSeg~\cite{luddecke2022clipseg} adds a text-conditioned decoder to CLIP;
+GroupViT~\cite{xu2022groupvit} and OVSeg~\cite{liang2023ovseg} target open-vocabulary segmentation and
+Grounded-SAM~\cite{ren2024groundedsam} chains a grounding model with SAM. Visus is much smaller and
+specialised: one CLIP backbone, a sub-million-parameter head, and a single binary mask per prompt.
 
-\paragraph{Face occlusion handling.}
-Occlusion in face analysis has been addressed with part-based and mask-learning
-models~\cite{song2019occlusion} and mask-aware recognition~\cite{wang2020masked}, as well as
-inpainting and attention-based methods that down-weight occluded features. Our approach instead
-identifies occluded regions explicitly via segmentation, which can serve as a pre-processing step for
-downstream recognition or reconstruction.
+\paragraph{Face occlusion.}
+Occlusion-robust recognition has been approached with mask learning~\cite{song2019occlusion} and
+masked-face datasets~\cite{wang2020masked}; MaskTheFace~\cite{anwar2020maskedface} synthesises masked
+faces. We reuse MaskTheFace for compositing and keep its alpha channel as the label.
 
 % ---------------------------------------------------------------------------
-\section{Occluded Dataset Construction}
-
-No large-scale public dataset provides pixel-level annotations for common occlusions such as glasses
-and face masks, so we construct a synthetic dataset based on CelebA~\cite{liu2015celeba}.
-Figure~\ref{fig:pipeline} illustrates the pipeline.
+\section{Dataset}
+\label{sec:data}
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{dataset_pipeline.png}
-  \caption{Synthetic occlusion dataset construction. Facial landmarks are detected on CelebA images,
-  glasses or masks are overlaid, and the corresponding binary segmentation masks are generated.}
-  \label{fig:pipeline}
+  \includegraphics[width=\linewidth, trim=0 0 0 800, clip]{dataset_examples.jpg}
+  \caption{Generated training data. Odd rows: composited faces (CelebA-HQ) with glasses, face masks or
+  both. Even rows: the exact labels (red: glasses, green: face mask), taken from the compositing step.}
+  \label{fig:data}
 \end{figure}
 
-\subsection{Base images}
-CelebA contains over 200{,}000 images of 10{,}177 identities (about 20 images each) covering a wide
-range of poses and lighting conditions, making it a suitable base for realistic occlusions.
-
-\subsection{Synthetic occlusion augmentation}
+There is no public dataset with pixel masks for glasses and face masks, so we generate one from the
+30,000 faces of CelebA-HQ~\cite{liu2015celeba} (Figure~\ref{fig:data}). For each face, dlib's 68
+landmarks place the occluders:
 \begin{itemize}
-  \item \textbf{Glasses.} Eyeglasses and sunglasses are added with OpenCV. Facial landmarks (dlib, 68
-  points) locate the eye region, and the glasses are resized and positioned to align with the face.
-  \item \textbf{Face masks.} Masks are applied with the MaskTheFace framework~\cite{anwar2020maskedface},
-  which places realistic mask overlays based on facial landmarks so that masks conform to facial
-  structure across poses.
+  \item \textbf{Face masks.} MaskTheFace~\cite{anwar2020maskedface} warps one of its templates (surgical
+  in three colours, N95, KN95, cloth) onto the face, with a texture or a random tint. We keep the
+  alpha channel of the warped template, so the label is exactly the set of covered pixels.
+  \item \textbf{Glasses.} Drawn procedurally with 4$\times$ supersampling: round, rectangular, wayfarer,
+  aviator and cat-eye frames, with dark, mirrored, tinted or clear lenses, scaled and rotated to the eye
+  landmarks. The label is the drawn footprint (lenses and frame).
 \end{itemize}
+40\% of faces get glasses, 40\% a face mask and 20\% both; where they overlap, the glasses label is
+removed from the mask label. 332 faces with no detected face are dropped, leaving 29,668 images
+(17,884 with glasses, 17,656 with a mask, 5,872 with both). The median label covers 6.8\% of the image
+for glasses and 12.4\% for masks. Images are split 25,215 / 1,484 / 2,969 (train / val / test).
+\textbf{Five of MaskTheFace's textures are held out}: they never appear in training or validation, and
+every textured mask in the test split uses one of them.
 
-\subsection{Ground-truth mask generation}
-Ground-truth masks are produced with MediaPipe Face Mesh~\cite{lugaresi2019mediapipe}. The detected
-landmarks define the occluded region (the eye region for glasses, the lower face for masks), which is
-rasterised into a binary mask.
-
-\subsection{Text label assignment}
-Each image is paired with a text label describing the occlusion. Instead of a single fixed label, each
-category has a small set of semantically similar prompts, and one is sampled at random for every
-training example to improve robustness to phrasing:
-\begin{itemize}
-  \item \textbf{Glasses:} ``Glasses'', ``Sunglass'', ``Eyewear'', ``Covered eyes'', ``Occluded eyes''
-  \item \textbf{Face mask:} ``Mask'', ``Face mask'', ``Covered face'', ``Occluded region'', ``Non face region''
-  \item \textbf{Clear face:} ``Face'', ``Human face'', ``Visible face'', ``Uncovered face'', ``Clear face region''
-\end{itemize}
+\paragraph{Evaluation pairs.} At test time every image is queried with \emph{both} prompts, ``glasses''
+and ``face mask''. A pair whose object is present (3,542 pairs) is scored by IoU; a pair whose object is
+absent (2,388 pairs, e.g.\ ``glasses'' on a mask-only face) should produce an empty mask.
 
 % ---------------------------------------------------------------------------
 \section{Method}
-
-Given an input image and a text prompt (e.g.\ ``glasses'' or ``face mask''), the image is processed by
-the CLIP visual encoder and the prompt by the CLIP text encoder. From these two branches we extract
-attention-based features: the visual attention map gives a coarse localisation of relevant regions,
-and the text features give semantic context. The two are fused by cross-modal attention modules inside
-a segmentation head that produces the final mask. Figure~\ref{fig:architecture} gives an overview.
+\label{sec:method}
 
 \begin{figure}[t]
 \centering
@@ -169,27 +148,21 @@ a segmentation head that produces the final mask. Figure~\ref{fig:architecture} 
   box/.default=white,
   arr/.style={-{Stealth[length=2mm]}, thick},
   node distance=4mm and 6mm]
-
-  % vision branch
   \node[box=gray!12] (img) {Input image\\$224\times224$};
-  \node[box=blue!10, right=of img] (vit) {CLIP ViT-B/32\\image encoder};
+  \node[box=blue!10, right=of img] (vit) {CLIP ViT-B/32\\last 3 blocks\\fine-tuned};
   \node[box=blue!20, right=of vit] (attn) {CLS$\to$patch attention\\(last block, $7\times7$)};
   \node[box=blue!10, right=of attn] (up) {Head average\\+ upsample};
-
-  % text branch
   \node[box=gray!12, below=12mm of img] (txt) {Prompt\\``glasses''};
   \node[box=orange!12, right=of txt] (te) {CLIP text\\encoder (frozen)};
-  \node[box=orange!22, right=of te] (tf) {Text attention\\features $f_{\text{text}}\in\mathbb{R}^3$};
-
-  % head
+  \node[box=orange!22, right=of te] (tf) {Text embedding\\$t\in\mathbb{R}^{512}$};
   \node[box=green!12, below=12mm of up, minimum height=16mm] (head)
-      {Segmentation head\\$3\times$[Conv--BN--ReLU\\$\to$ CMAF]};
-  \node[box=gray!12, right=of head] (out) {$1\times1$ conv\\+ sigmoid\\$\Rightarrow$ mask};
-
+      {Segmentation head\\(at $112\times112$)\\$3\times$[Conv--BN--ReLU\\$\to$ CMAF]};
+  \node[box=gray!12, right=of head] (out) {$1\times1$ conv\\+ upsample\\$\Rightarrow$ logits};
   \draw[arr] (img) -- (vit);
   \draw[arr] (vit) -- (attn);
   \draw[arr] (attn) -- (up);
-  \draw[arr] (up) -- node[right, align=left, font=\footnotesize]{$A_{\text{vis}}$} (head);
+  \draw[arr] (up) -- node[right, align=left, font=\footnotesize]{$A$} (head);
+  \draw[arr] (img.south) -- ++(0,-4mm) -| node[pos=0.25, above, font=\footnotesize]{RGB} ([xshift=-6mm]head.north);
   \draw[arr] (txt) -- (te);
   \draw[arr] (te) -- (tf);
   \draw[arr] (tf) -- (head);
@@ -205,7 +178,7 @@ a segmentation head that produces the final mask. Figure~\ref{fig:architecture} 
   node distance=4mm and 7mm]
   \node[box=green!8] (v) {Vision features $V$};
   \node[box=green!18, right=of v] (vc) {Conv--BN--ReLU};
-  \node[box=orange!12, below=of v] (t) {$f_{\text{text}}$};
+  \node[box=orange!12, below=of v] (t) {$t$};
   \node[box=orange!22, right=of t] (tp) {Text projection\\(MLP)};
   \node[box=purple!15, right=12mm of vc, yshift=-5.5mm, minimum height=14mm] (mha)
       {Multi-head\\cross-attention\\Q: vision\\K, V: text};
@@ -223,215 +196,332 @@ a segmentation head that produces the final mask. Figure~\ref{fig:architecture} 
           label={[font=\footnotesize]above:Cross-Modal Attention Fusion (CMAF)}] {};
   \end{scope}
 \end{tikzpicture}
-\caption{Top: overview of the framework. Visual attention from CLIP is combined with text-derived
-features through cross-modal attention to produce a segmentation mask. Bottom: one CMAF block.}
+\caption{Top: Visus v2. The CLIP attention map and the RGB image enter a segmentation head that is
+conditioned on the prompt's CLIP text embedding. Bottom: one CMAF block.}
 \label{fig:architecture}
 \end{figure}
 
-\subsection{Backbone design}
-CLIP consists of a vision encoder and a text encoder, which we treat differently.
+Figure~\ref{fig:architecture} gives an overview.
+
+\paragraph{Visual prior.} A forward hook on the last block of CLIP's ViT-B/32 image encoder recomputes
+its attention from the block's LayerNorm-ed input (exactly as CLIP computes it), and keeps the CLS
+token's attention over the $7\times7$ patch grid, $a\in\mathbb{R}^{B\times H\times 49}$. Averaging over
+the $H$ heads and upsampling gives the prior
+\begin{equation}
+  A = \operatorname{Upsample}\Big(\tfrac{1}{H}\textstyle\sum_{h} a^{(h)}\Big) \in \mathbb{R}^{B\times1\times224\times224}.
+\end{equation}
+The computation is differentiable, and the \textbf{last three vision blocks are fine-tuned}, so the
+backbone learns to aim its attention at the occluder; the other nine blocks stay frozen.
+
+\paragraph{Text conditioning.} The prompt is encoded by CLIP's \textbf{frozen} text encoder into
+an L2-normalised 512-d embedding $t$. Keeping it frozen preserves CLIP's knowledge of related phrasings
+(Table~\ref{tab:prompts}).
+
+\paragraph{Segmentation head with CMAF.} The head receives $[A; \text{RGB}]$ (4 channels) at half
+resolution ($112\times112$, which cuts activation memory by 4$\times$). Each of three stages is a
+Conv--BN--ReLU followed by a CMAF block: vision features are flattened into queries, the projected text
+embedding provides key and value of a multi-head cross-attention, and the result is concatenated with
+the vision features and fused by convolution,
+\begin{equation}
+  V' = \operatorname{Fuse}\big(V,\ \operatorname{CrossAttn}(Q{=}V,\ K{=}V{=}\operatorname{MLP}(t))\big).
+\end{equation}
+A $1\times1$ convolution produces logits, upsampled to $224\times224$; $\sigma(\cdot)$ is the probability
+that a pixel is covered by the named object. In total 22.0\,M parameters train: 21.3\,M in the three
+CLIP blocks and about 0.7\,M in the head.
+
+\paragraph{Loss.} BCE + Dice on the logits. Dice handles the class imbalance (an occluder covers
+7--12\% of the image); BCE gives a well-defined gradient on empty targets, where Dice alone is
+degenerate.
+
+\paragraph{Negative prompts.} During training, 25\% of samples are queried with an object that is
+\emph{not} in the image (when such an object exists), with an all-zero target. Without this, the model
+can learn to segment ``whatever occluder is there'' and ignore the prompt. Training prompts are drawn
+from seven phrasings per class (e.g.\ ``sunglasses'', ``eyewear'', ``surgical mask'').
+
+% ---------------------------------------------------------------------------
+\section{Evaluation protocol}
+\label{sec:eval}
+
 \begin{itemize}
-  \item \textbf{Text encoder (frozen).} The text encoder is kept completely frozen. Pre-trained on
-  large-scale image--text data, it already captures rich semantic relationships between language and
-  visual concepts (e.g.\ ``glasses'', ``face mask''). Fine-tuning it on a small task-specific dataset
-  risks catastrophic forgetting; freezing it preserves its ability to generalise across phrasings.
-  \item \textbf{Vision encoder (partially fine-tuned).} Only the final transformer blocks of the vision
-  encoder are set as trainable. Early layers capture low-level, transferable features such as edges and
-  textures, whereas deeper layers encode higher-level semantics better suited to adaptation. This lets
-  the model specialise while retaining the robustness of pre-trained features and reducing overfitting
-  and compute.
+  \item \textbf{IoU} (occlusion IoU): mean per-pair IoU between the predicted and true \emph{occluded}
+  region over pairs where the object is present, reported for glasses, face masks, and their mean. An
+  empty prediction scores 0.
+  \item \textbf{Clean rate}: over pairs where the prompted object is absent, the share of predictions
+  that are empty (under 0.5\% of the image).
+  \item \textbf{Score} $=\sqrt{\text{IoU}\times\text{clean rate}}$. It is 0 for a model that never predicts
+  anything \emph{and} for one that ignores the prompt. The score selects both the checkpoint and the
+  binarisation threshold, on the validation split only.
 \end{itemize}
-
-\subsection{Role of attention maps}
-CLIP embeddings are a global representation of the whole image, well suited to classification but
-insufficient for segmentation, which needs spatial localisation. Attention maps preserve spatial
-information: the CLS token attends to image patches, and the attention weights indicate the relative
-importance of each region. We use these maps as an initial estimate of the occluded region.
-
-\subsection{Visual attention extraction}
-We extract attention from the final transformer layer of the visual encoder, focusing on the
-interaction between the CLS token and the image patches. This gives a tensor
-$a \in \mathbb{R}^{B \times H \times N}$, where $H$ is the number of heads and $N$ the number of
-patches. We average over heads, reshape to a spatial grid and upsample to the input resolution:
-\begin{equation}
-  A_{\text{vis}} = \operatorname{Upsample}\!\left(\frac{1}{H}\sum_{h=1}^{H} a^{(h)}\right).
-\end{equation}
-The resulting map is a coarse spatial prior over regions of interest.
-
-\subsection{Text feature representation}
-From the text encoder we extract a compact vector that summarises attention patterns across tokens.
-Instead of using the full embedding, we aggregate CLS-to-token attention from each of the last three
-layers into one scalar per layer, giving $f_{\text{text}} \in \mathbb{R}^{3}$. This vector acts as the
-semantic signal that guides segmentation.
-
-\subsection{Cross-Modal Attention Fusion}
-To combine visual and textual information we use a Cross-Modal Attention Fusion (CMAF) module.
-Conceptually, visual features indicate \emph{where} relevant regions are, and text features indicate
-\emph{what} the model should focus on. Cross-attention, with spatial vision tokens as queries and the
-projected text feature as key and value, lets the model refine visual attention using semantic cues:
-\begin{equation}
-  V' = \operatorname{Fusion}\big(V,\ \operatorname{CrossAttention}(V, f_{\text{text}})\big).
-\end{equation}
-
-\subsection{Segmentation head}
-The head refines the visual attention map through three convolutional stages, each followed by a CMAF
-block (channel flow $1 \to 128 \to 64 \to 128 \to 64 \to 64 \to 64 \to 1$). Spatial resolution is kept
-fixed while the features are progressively refined. A final $1\times1$ convolution and sigmoid output a
-single-channel mask in $[0,1]$.
-
-\subsection{Dice loss}
-In occlusion segmentation the foreground is typically much smaller than the background, and losses
-such as binary cross-entropy that weigh every pixel equally can perform poorly under this imbalance.
-Dice loss measures overlap directly:
-\begin{equation}
-  \mathcal{L}_{\text{Dice}} = 1 - \frac{2\,TP + \epsilon}{2\,TP + FP + FN + \epsilon}.
-\end{equation}
-It decreases as overlap increases, penalises both false positives and false negatives, focuses on
-region-level rather than per-pixel agreement, and handles class imbalance naturally.
+Every table also reports an \emph{empty-mask baseline} that predicts nothing. We added it after
+finding that v1's metric gave such a baseline a high score (Section~\ref{sec:v1}).
 
 % ---------------------------------------------------------------------------
 \section{Experiments}
+\label{sec:results}
 
-\subsection{Implementation details}
-All experiments use CLIP ViT-B/32 from OpenAI's \texttt{clip} library. Images are pre-processed with
-CLIP's default pipeline (resize to $224\times224$, normalise); masks are resized to $224\times224$ and
-binarised at 0.5. Training runs on a single NVIDIA GPU, with checkpoints saved every two epochs.
-Table~\ref{tab:hparams} lists the hyperparameters.
+\subsection{Setup}
+Table~\ref{tab:hparams} lists the training configuration. Training ran on one NVIDIA T4 (Kaggle) and
+took 113 minutes. Before training, an automated check verified that gradients reach the three tuned
+CLIP blocks but not the frozen ones, and that a 6-image batch can be overfit (loss $1.48\to0.011$).
 
 \begin{table}[h]
   \centering
-  \caption{Training hyperparameters.}
+  \caption{Training configuration of Visus v2.}
   \label{tab:hparams}
-  \begin{tabular}{ll}
+  \small
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{ll@{\qquad}ll}
     \toprule
-    Hyperparameter & Value \\
+    Backbone & CLIP ViT-B/32, last 3 blocks tuned & Epochs & 20 \\
+    Input size & $224\times224$ & Batch size & 64 \\
+    Optimiser & AdamW, weight decay 0.01 & Schedule & 1-epoch warmup + cosine \\
+    LR (head / CLIP blocks) & $3\times10^{-4}$ / $1\times10^{-5}$ & Gradient clip & 1.0 \\
+    Loss & BCE + Dice & Precision & fp16 autocast \\
+    Augmentation & crop, flip, $\pm10^\circ$, colour jitter & Negative prompts & 25\% \\
+    Selection & best val score (epoch 18) & Threshold & 0.6 (chosen on val) \\
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+\subsection{Main results}
+
+\begin{table}[h]
+  \centering
+  \caption{Held-out synthetic test split: 2,969 faces, 3,542 present and 2,388 absent pairs.}
+  \label{tab:main}
+  \begin{tabular}{lccccc}
+    \toprule
+    Model & IoU glasses & IoU mask & IoU & Clean rate & Score \\
     \midrule
-    CLIP backbone & ViT-B/32 \\
-    Image size & $224\times224$ \\
-    Batch size & 24 \\
-    Optimiser & AdamW \\
-    Learning rate & $1\times10^{-4}$ \\
-    Weight decay & 0.01 \\
-    Epochs & 50 \\
-    Train / val split & 80\% / 20\% \\
-    Dice loss smoothing $\epsilon$ & 1.0 \\
-    Text layers used & 3 \\
-    CMAF hidden dim & 64 \\
-    Segmentation head hidden channels & 128 \\
+    Empty-mask baseline & 0.000 & 0.000 & 0.000 & 1.000 & 0.000 \\
+    v1 (\texttt{visus\_epoch50.pt}) & 0.357 & 0.467 & 0.412 & 0.001 & 0.019 \\
+    \textbf{Visus v2} & \textbf{0.952} & \textbf{0.979} & \textbf{0.965} & \textbf{0.997} & \textbf{0.981} \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-\subsection{Training curves}
-Figure~\ref{fig:dice} shows the Dice loss of saved checkpoints across training, and
-Table~\ref{tab:dice} reports it at selected epochs.
+Table~\ref{tab:main} shows that v2 segments both occluders accurately and almost always stays silent when
+the prompted object is absent. v1, evaluated with the same protocol, recovers some occlusion but
+essentially never returns an empty mask: it predicts ``an occluder'' regardless of the prompt.
+Figure~\ref{fig:curves} shows that training is smooth: validation loss tracks training loss and the
+score plateaus after about 15 epochs.
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=0.7\linewidth]{dice_loss_convergence.png}
-  \caption{Dice loss across the 50 training epochs, with moving average, exponential moving average,
-  best-so-far and linear trend.}
-  \label{fig:dice}
+  \includegraphics[width=0.92\linewidth]{training_curves.png}
+  \caption{Training and validation loss (left); validation IoU and clean rate at the best threshold
+  of each epoch (right).}
+  \label{fig:curves}
 \end{figure}
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{hero.jpg}
+  \caption{The prompt decides what is segmented. Test faces wearing both occluders, queried with
+  ``glasses'' (red) and ``face mask'' (blue). Masks here use textures held out of training.}
+  \label{fig:hero}
+\end{figure}
+
+\subsection{Ablations}
+Table~\ref{tab:ablation} removes one component at a time. To keep the cost manageable, all four
+variants are trained the same short way (6 epochs on 10,000 training images, otherwise identical
+settings), and each threshold is chosen on validation. They are then scored on the full test split.
+The full model is therefore weaker here than the released one, but the variants are comparable to each other.
+
 \begin{table}[h]
   \centering
-  \caption{Dice loss ($\downarrow$) at selected training epochs.}
-  \label{tab:dice}
-  \begin{tabular}{cc}
+  \caption{Ablations (short schedule, full test split).}
+  \label{tab:ablation}
+  \begin{tabular}{lccccc}
     \toprule
-    Epoch & Dice loss \\
+    Variant & IoU glasses & IoU mask & IoU & Clean rate & Score \\
     \midrule
-    6 & 0.0559 \\
-    10 & 0.0468 \\
-    18 & 0.1650 \\
-    22 & 0.0633 \\
-    24 & 0.0383 \\
-    50 & 0.0336 \\
+    \textbf{Visus v2} & \textbf{0.893} & \textbf{0.947} & \textbf{0.920} & \textbf{0.961} & \textbf{0.940} \\
+    CLIP frozen (no fine-tuning) & 0.811 & 0.866 & 0.838 & 0.879 & 0.858 \\
+    Head without the RGB image & 0.739 & 0.850 & 0.794 & 0.946 & 0.867 \\
+    v1 text features ($\mathbb{R}^3$) & 0.468 & 0.483 & 0.476 & 0.004 & 0.042 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-\subsection{Segmentation results: CelebA and LFW}
-We evaluate on a held-out subset of CelebA and on LFW~\cite{huang2008lfw} to assess generalisation to
-an unseen distribution, using mean Intersection over Union:
-\begin{equation}
-  \text{mIoU} = \frac{1}{N}\sum_{i=1}^{N} \frac{|P_i \cap G_i|}{|P_i \cup G_i|},
-\end{equation}
-where $P_i$ and $G_i$ are the predicted and ground-truth binary masks for sample $i$. Ground-truth masks
-for evaluation are generated with MediaPipe facial landmarks. Table~\ref{tab:miou} reports the scores.
+\begin{itemize}
+  \item \textbf{Fine-tuning CLIP} is worth 8 points of score. With the backbone frozen, both IoU and the clean
+  rate drop: the attention of a frozen CLIP is less focused on the occluder.
+  \item \textbf{The RGB image} matters most for glasses (0.739 $\to$ 0.893 IoU). A $7\times7$ prior cannot
+  resolve thin frames; the image provides the edges. The clean rate barely moves, because deciding
+  \emph{whether} the object is there is the job of the attention prior and the text.
+  \item \textbf{The text representation} is decisive. With v1's three scalars the clean rate collapses to
+  0.004: the head cannot tell the prompts apart, so it segments whichever occluder it sees. This
+  reproduces v1's behaviour (Table~\ref{tab:main}).
+\end{itemize}
 
+\subsection{Where does it fail?}
 \begin{table}[h]
   \centering
-  \caption{mIoU on held-out test sets.}
-  \label{tab:miou}
-  \begin{tabular}{lcl}
+  \caption{Test IoU by category (present pairs). Every textured mask in the test split uses one of
+  the five textures held out of training.}
+  \label{tab:breakdown}
+  \small
+  \begin{tabular}{lc@{\qquad}lc}
     \toprule
-    Dataset & mIoU & Notes \\
+    Glasses & IoU & Face mask & IoU \\
     \midrule
-    CelebA (held-out) & 0.9441 & In-distribution \\
-    LFW & 0.9405 & Out-of-distribution \\
+    round / wayfarer / aviator & 0.956 / 0.955 / 0.951 & surgical (3 colours) & 0.977--0.981 \\
+    cat-eye / rectangular & 0.949 / 0.946 & N95 / KN95 / cloth & 0.978 / 0.981 / 0.978 \\
+    lens: dark / mirror / tint & 0.954 / 0.952 / 0.953 & solid colour (seen) & 0.980 \\
+    lens: clear & 0.941 & \textbf{held-out texture} & \textbf{0.976} \\
+    alone / with a mask & 0.954 / 0.948 & alone / with glasses & 0.980 / 0.976 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-The model achieves an mIoU of 0.9441 on held-out CelebA and 0.9405 on LFW. The small gap between
-in-distribution and out-of-distribution performance suggests good generalisation, which we attribute
-to the frozen CLIP text encoder's semantic representations and the prompt augmentation used during
-training.
-
-\subsection{Qualitative analysis}
-Figure~\ref{fig:qualitative} shows example LFW inputs with the CLS-token attention map, the predicted
-mask and the ground truth. The raw CLIP attention is spatially diffuse and centred broadly on prominent
-facial features; the segmentation head reshapes it towards the occluded region named in the prompt.
+Performance is uniform across styles (Table~\ref{tab:breakdown}). Unseen mask textures cost only
+0.004 IoU, so the model has not memorised mask appearance. The hardest glasses are those with clear
+lenses, where the frame is the only visible evidence. Figure~\ref{fig:examples} shows random test
+pairs and Figure~\ref{fig:failures} the worst ones. Most of the worst cases are thin or clear frames
+over a busy background, or faces where the original CelebA-HQ photo \emph{already} contained real
+glasses or an eye-covering accessory. Those real objects are not labelled, so when the model segments
+them (the last two columns of Figure~\ref{fig:failures}, prompt ``glasses'' with no synthetic glasses),
+it is counted as a false positive although it is arguably correct. Part of the remaining error is
+therefore label noise in the base photos.
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=0.85\linewidth]{qualitative.png}
-  \caption{Qualitative results on LFW. Columns: input image with prompt, CLS-token attention map,
-  predicted mask, ground truth (occluded region shown in black).}
-  \label{fig:qualitative}
+  \includegraphics[width=\linewidth]{test_examples.jpg}
+  \caption{Random test pairs: prompt, CLIP attention, prediction (red) and ground truth (green). The
+  last two columns ask for an object that is not present; both predictions are empty.}
+  \label{fig:examples}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{failures.jpg}
+  \caption{The six lowest-IoU present pairs and the two absent pairs with the largest predicted area.
+  In the last two columns the base photo already shows real glasses, which carry no label.}
+  \label{fig:failures}
+\end{figure}
+
+\subsection{Prompt robustness}
+Table~\ref{tab:prompts} re-runs 1,000 present test pairs per class with other phrasings, including
+some never used in training. IoU is unchanged to the third decimal: the frozen CLIP text encoder maps
+synonyms close together, and the head responds to the meaning rather than the exact words.
+
+The same table shows the limit of this. Prompts that name \emph{neither} class (``hat'', ``beard'', ``a
+cat'') should give an empty mask, but they do so only 0--39\% of the time. The model has learned a
+two-way choice, and it maps any prompt to the nearer of its two classes. Visus is therefore a
+prompt-conditioned two-class segmenter, not an open-vocabulary one. Adding unrelated prompts to the
+negative examples during training is the obvious fix.
+
+\begin{table}[h]
+  \centering
+  \caption{Prompt robustness on 1,000 present pairs per class (* = phrasing never seen in training),
+  and the empty rate for prompts that name neither class.}
+  \label{tab:prompts}
+  \small
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{lc@{\qquad}lc@{\qquad}lc}
+    \toprule
+    Glasses prompt & IoU & Mask prompt & IoU & Unrelated prompt & Empty \\
+    \midrule
+    glasses & 0.952 & face mask & 0.979 & hat & 0.30 \\
+    sunglasses / eyewear & 0.952 / 0.952 & mask / surgical mask & 0.979 / 0.979 & beard & 0.39 \\
+    reading glasses* & 0.951 & N95 respirator* & 0.979 & a cat & 0.16 \\
+    aviator sunglasses* & 0.952 & covid mask* & 0.979 & a red car & 0.00 \\
+    eyeglass frames* & 0.952 & face covering* & 0.979 & & \\
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+\subsection{v1 test sets (LFW and CelebA)}
+The original project's test subsets, 300 LFW~\cite{huang2008lfw} and 363 CelebA images with
+synthetic occlusions, have ground truth drawn as coarse polygons from MediaPipe~\cite{lugaresi2019mediapipe}
+face landmarks rather than from the pasted occluders. The labels are therefore imprecise, and about
+10\% of the LFW mask labels are empty. On these sets v2 scores occlusion IoU
+0.500 (LFW) and 0.485 (CelebA), against 0.417 and 0.515 for v1, and 0.053 / 0.020 for the empty
+baseline. These numbers mostly measure agreement with the polygon shape rather than segmentation
+quality. Figure~\ref{fig:lfw} shows that v2's masks follow the actual glasses frames and masks on
+these images, while the reference polygons do not.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{lfw_examples.jpg}
+  \caption{v2 on the v1 LFW test images. Row 3: prediction (red); row 4: v1 ground-truth polygons
+  (green).}
+  \label{fig:lfw}
 \end{figure}
 
 % ---------------------------------------------------------------------------
-\section{Discussion}
+\section{From v1 to v2: what was wrong}
+\label{sec:v1}
 
-\paragraph{Freezing strategy.}
-Keeping the text encoder frozen is important: it has already learned precise semantic representations
-of occlusion categories, and fine-tuning it on a small task-specific dataset risks degrading them.
+The April 2026 version of this report claimed mIoU 0.9441 (CelebA) and 0.9405 (LFW). Re-examining the
+code showed that these numbers did not measure occlusion segmentation, and that the model had not
+learned what we believed it had. Table~\ref{tab:v1} lists the problems and their fixes.
 
-\paragraph{Compact text representation.}
-The text feature $f_{\text{text}} \in \mathbb{R}^{3}$ is deliberately minimal: it encodes only per-layer
-CLS attention statistics rather than the full 512-dimensional CLIP text embedding. This was motivated by
-parameter efficiency, but it is a potential bottleneck; richer text representations may improve
-performance.
+\begin{table}[H]
+  \centering
+  \caption{Problems found in v1 and how v2 addresses them.}
+  \label{tab:v1}
+  \small
+  \begin{tabular}{p{0.46\linewidth}p{0.46\linewidth}}
+    \toprule
+    v1 & v2 \\
+    \midrule
+    The model predicted the \emph{visible face}, and IoU was computed on that background region. It
+    covers most of the image, so a model that predicts no occlusion at all already scores highly. &
+    Predict the occluded region; report occlusion IoU next to an empty-mask baseline. \\
+    The ``fine-tuned'' CLIP block received no gradient: the attention extractor ran under
+    \texttt{no\_grad} and detached its output. Only the head trained. &
+    Differentiable extractor; a pre-training check asserts that gradients reach the tuned blocks. \\
+    Text features were three scalars (CLS attention per layer), carrying almost no information about
+    the prompt. &
+    512-d CLIP text embedding; negative prompts teach the model to respond to it (clean rate 0.001
+    $\to$ 0.997). \\
+    Training labels came from a Kaggle CelebA set whose masks turned out to be random face parts (eyes,
+    lips, hair, skin), not glasses or masks. Test labels were landmark polygons. &
+    Exact labels from our own compositing; a held-out texture split; inspection of the data before use. \\
+    The checkpoint was the last epoch, with a 0.9 threshold picked without validation; the loss curve
+    spiked (Dice 0.0468 at epoch 10, 0.165 at epoch 18). &
+    Warmup + cosine schedule, gradient clipping; checkpoint and threshold chosen on validation. \\
+    An ablation figure in the April report was not backed by experiments. &
+    Removed. Every number in this version comes from a script in the repository, and the raw outputs are in
+    \texttt{results/}. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
-\paragraph{Dice loss for class imbalance.}
-Glasses and face masks typically cover a small fraction of the face image. Binary cross-entropy can be
-dominated by the majority class in this setting, whereas Dice loss directly optimises overlap between
-prediction and ground truth.
+% ---------------------------------------------------------------------------
+\section{Limitations and future work}
+\begin{itemize}
+  \item \textbf{Synthetic only.} All training and the main test use composited occluders. Real
+  photographs (reflections, hands holding masks, partially worn masks, transparent frames) are not yet
+  measured; a small hand-labelled real test set is the most important next step.
+  \item \textbf{Two classes, closed vocabulary.} Only glasses and face masks are trained, and prompts naming
+  anything else are mapped to one of them (Table~\ref{tab:prompts}). Training with unrelated negative
+  prompts, and with data for hats, scarves or hands, would make the prompt mechanism genuinely open.
+  \item \textbf{Unlabelled real accessories.} Some base photos already contain real glasses, which carry no
+  label; this adds noise to both training and the test numbers.
+  \item \textbf{Resolution.} The prior is a $7\times7$ grid and the head runs at $112\times112$, so thin
+  frames are where most errors are. A ViT-B/16 backbone or a skip connection from earlier blocks would
+  help.
+  \item \textbf{One seed.} Results are from single runs; we have not measured run-to-run variance.
+\end{itemize}
 
 % ---------------------------------------------------------------------------
 \section{Conclusion}
+Visus shows that a frozen CLIP text encoder, the attention of a few fine-tuned CLIP vision blocks and a
+small cross-modal head are enough to segment facial occlusions by name. It reaches 0.965 occlusion IoU on
+held-out synthetic faces, and returns an empty mask when the prompted occluder is absent. Much of the project's value
+came from making the evaluation honest: exact labels, a baseline that predicts nothing, and selection on
+validation. Those changes turned a reported 0.94 that measured the wrong thing into a 0.965 that
+measures the right one.
 
-We presented a lightweight, language-guided face occlusion segmentation framework that repurposes the
-internal attention of a pre-trained CLIP model. By combining CLS-token visual attention maps with
-compact multi-layer text attention statistics through learned cross-modal fusion modules, the system
-segments glasses and face-mask occlusions without a heavy decoder or full backbone fine-tuning, and
-reaches an mIoU of 0.9441 on CelebA and 0.9405 on LFW.
-
-\paragraph{Limitations and future work.}
-The text representation is very compact ($\mathbb{R}^3$); richer encodings such as the full
-512-dimensional CLIP text embedding may improve segmentation quality. The approach uses prompt
-augmentation at training time but does not explore zero-shot generalisation to unseen occlusion
-categories. Data augmentation (random crops, photometric jitter) and more principled prompt engineering
-could improve generalisation, and extending the framework to multi-class occlusion segmentation and
-evaluating on benchmarks such as the AR face database would provide broader validation.
-
-\paragraph{Acknowledgments.}
-We acknowledge the CelebA and LFW datasets, OpenAI's CLIP library, MaskTheFace and MediaPipe.
+\paragraph{Acknowledgements.}
+CelebA / CelebA-HQ and LFW datasets, OpenAI's CLIP, MaskTheFace, dlib and MediaPipe. Training ran on
+free Kaggle GPUs.
 
 % ---------------------------------------------------------------------------
+\clearpage
 \begin{thebibliography}{99}\small
 \bibitem{radford2021clip} A.~Radford, J.~W. Kim, C.~Hallacy, et al. Learning transferable visual models from natural language supervision. \emph{ICML}, 2021.
 \bibitem{dosovitskiy2021vit} A.~Dosovitskiy, L.~Beyer, A.~Kolesnikov, et al. An image is worth 16x16 words: Transformers for image recognition at scale. \emph{ICLR}, 2021.
