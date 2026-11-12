@@ -1,0 +1,182 @@
+{
+  "checkpoint": "/kaggle/input/notebooks/sreenityathatikunta/visus-train/run_v2/checkpoints/best.pt",
+  "threshold": 0.6,
+  "test": {
+    "iou": 0.965118789735115,
+    "n_present": 3542,
+    "clean_rate": 0.9966499162479062,
+    "n_absent": 2388
+  },
+  "breakdown": {
+    "glasses style: aviator": {
+      "iou": 0.9509663722848379,
+      "n": 372
+    },
+    "glasses style: cateye": {
+      "iou": 0.9492366627372545,
+      "n": 348
+    },
+    "glasses style: rect": {
+      "iou": 0.9464637480191225,
+      "n": 338
+    },
+    "glasses style: round": {
+      "iou": 0.9563230510939841,
+      "n": 349
+    },
+    "glasses style: wayfarer": {
+      "iou": 0.9549300507478274,
+      "n": 369
+    },
+    "glasses: alone": {
+      "iou": 0.9535342909277629,
+      "n": 1199
+    },
+    "glasses: with the other object": {
+      "iou": 0.9477242888879528,
+      "n": 577
+    },
+    "lens: clear": {
+      "iou": 0.9412256413169445,
+      "n": 248
+    },
+    "lens: dark": {
+      "iou": 0.9537893758457937,
+      "n": 785
+    },
+    "lens: mirror": {
+      "iou": 0.952370227836981,
+      "n": 369
+    },
+    "lens: tint": {
+      "iou": 0.9533457121747063,
+      "n": 374
+    },
+    "mask texture: default look": {
+      "iou": 0.9786254959416303,
+      "n": 277
+    },
+    "mask texture: held-out texture": {
+      "iou": 0.975600107586814,
+      "n": 471
+    },
+    "mask texture: solid colour": {
+      "iou": 0.9800975546972691,
+      "n": 1018
+    },
+    "mask type: KN95": {
+      "iou": 0.9811187489279385,
+      "n": 203
+    },
+    "mask type: N95": {
+      "iou": 0.9775134792923927,
+      "n": 200
+    },
+    "mask type: cloth": {
+      "iou": 0.9779908156464368,
+      "n": 687
+    },
+    "mask type: surgical": {
+      "iou": 0.9773226250772891,
+      "n": 230
+    },
+    "mask type: surgical_blue": {
+      "iou": 0.9806370063968327,
+      "n": 230
+    },
+    "mask type: surgical_green": {
+      "iou": 0.9789167419075966,
+      "n": 216
+    },
+    "mask: alone": {
+      "iou": 0.9797287449002566,
+      "n": 1189
+    },
+    "mask: with the other object": {
+      "iou": 0.9764796291934762,
+      "n": 577
+    }
+  },
+  "prompts": {
+    "glasses: glasses": {
+      "iou": 0.9515478922426701,
+      "n": 1000,
+      "unseen_in_training": false
+    },
+    "glasses: sunglasses": {
+      "iou": 0.9516259385049343,
+      "n": 1000,
+      "unseen_in_training": false
+    },
+    "glasses: eyewear": {
+      "iou": 0.9515912407636642,
+      "n": 1000,
+      "unseen_in_training": false
+    },
+    "glasses: reading glasses*": {
+      "iou": 0.9512072679698467,
+      "n": 1000,
+      "unseen_in_training": true
+    },
+    "glasses: aviator sunglasses*": {
+      "iou": 0.9516229552030563,
+      "n": 1000,
+      "unseen_in_training": true
+    },
+    "glasses: eyeglass frames*": {
+      "iou": 0.9515509952008724,
+      "n": 1000,
+      "unseen_in_training": true
+    },
+    "mask: face mask": {
+      "iou": 0.9787707927823067,
+      "n": 1000,
+      "unseen_in_training": false
+    },
+    "mask: mask": {
+      "iou": 0.9787555772066117,
+      "n": 1000,
+      "unseen_in_training": false
+    },
+    "mask: surgical mask": {
+      "iou": 0.978749559879303,
+      "n": 1000,
+      "unseen_in_training": false
+    },
+    "mask: N95 respirator*": {
+      "iou": 0.9787458239793777,
+      "n": 1000,
+      "unseen_in_training": true
+    },
+    "mask: covid mask*": {
+      "iou": 0.9787016493082047,
+      "n": 1000,
+      "unseen_in_training": true
+    },
+    "mask: face covering*": {
+      "iou": 0.978734160721302,
+      "n": 1000,
+      "unseen_in_training": true
+    },
+    "unrelated: hat": {
+      "empty_rate": 0.296,
+      "mean_area": 0.07636371983502249,
+      "n": 1000
+    },
+    "unrelated: beard": {
+      "empty_rate": 0.385,
+      "mean_area": 0.07498403616375435,
+      "n": 1000
+    },
+    "unrelated: a cat": {
+      "empty_rate": 0.161,
+      "mean_area": 0.07931971457258624,
+      "n": 1000
+    },
+    "unrelated: a red car": {
+      "empty_rate": 0.0,
+      "mean_area": 0.09365658873226494,
+      "n": 1000
+    }
+  }
+}
