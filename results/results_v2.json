@@ -1,0 +1,78 @@
+{
+  "checkpoint": "/kaggle/working/run_v2/checkpoints/best.pt",
+  "threshold": 0.6,
+  "sets": {
+    "synthetic test": {
+      "model": {
+        "threshold": 0.6,
+        "iou_glasses": 0.9516466945443336,
+        "iou_mask": 0.978667170855629,
+        "iou": 0.9651569326999814,
+        "clean_rate": 0.9966499162479062,
+        "overall": 0.9778163158923739,
+        "n_present": 3542,
+        "n_absent": 2388,
+        "score": 0.9807770267198974
+      },
+      "empty_baseline": {
+        "threshold": 0.5,
+        "iou_glasses": 0.0,
+        "iou_mask": 0.0,
+        "iou": 0.0,
+        "clean_rate": 1.0,
+        "overall": 0.4026981450252951,
+        "n_present": 3542,
+        "n_absent": 2388,
+        "score": 0.0
+      }
+    },
+    "LFW (legacy)": {
+      "model": {
+        "threshold": 0.6,
+        "iou_glasses": 0.4179264957437644,
+        "iou_mask": 0.5824291962934168,
+        "iou": 0.5001778460185906,
+        "clean_rate": NaN,
+        "overall": 0.5012745306889216,
+        "n_present": 300,
+        "n_absent": 0,
+        "score": 0.5001778460185906
+      },
+      "empty_baseline": {
+        "threshold": 0.5,
+        "iou_glasses": 0.0,
+        "iou_mask": 0.10526315789473684,
+        "iou": 0.05263157894736842,
+        "clean_rate": NaN,
+        "overall": 0.05333333333333334,
+        "n_present": 300,
+        "n_absent": 0,
+        "score": 0.05263157894736842
+      }
+    },
+    "CelebA (legacy)": {
+      "model": {
+        "threshold": 0.6,
+        "iou_glasses": 0.3358759547060995,
+        "iou_mask": 0.6348591374187935,
+        "iou": 0.4853675460624465,
+        "clean_rate": NaN,
+        "overall": 0.5047232066512848,
+        "n_present": 363,
+        "n_absent": 0,
+        "score": 0.4853675460624465
+      },
+      "empty_baseline": {
+        "threshold": 0.5,
+        "iou_glasses": 0.006329113924050633,
+        "iou_mask": 0.03414634146341464,
+        "iou": 0.020237727693732634,
+        "clean_rate": NaN,
+        "overall": 0.02203856749311295,
+        "n_present": 363,
+        "n_absent": 0,
+        "score": 0.020237727693732634
+      }
+    }
+  }
+}

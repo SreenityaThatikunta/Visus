@@ -1,0 +1,22 @@
+{
+  "grad_norm_last3_blocks": [
+    0.004287790972739458,
+    0.0018263703677803278,
+    0.0014678488951176405
+  ],
+  "grad_frozen_block0": false,
+  "loss_start": 1.4838950634002686,
+  "loss_end": 0.011078392155468464,
+  "tuned_block_changed": true,
+  "frozen_block_unchanged": true,
+  "overfit_same_batch": {
+    "threshold": 0.5,
+    "iou_glasses": NaN,
+    "iou_mask": 0.9904554684956869,
+    "iou": 0.9904554684956869,
+    "clean_rate": NaN,
+    "overall": 0.9904554684956869,
+    "n_present": 6,
+    "n_absent": 0
+  }
+}

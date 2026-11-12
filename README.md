@@ -8,6 +8,30 @@ Give Visus a face image and a prompt such as `"glasses"` or `"mask"`, and it ret
 
 ## Results
 
+**v2 (current code), trained on Kaggle (T4, 20 epochs, about 2 h).** The checkpoint and the threshold (0.6) were chosen on validation. The test split below was never seen during training or selection, and it uses 5 held-out mask textures.
+
+| Test set | IoU glasses | IoU face mask | IoU | Clean rate | Score |
+|---|---|---|---|---|---|
+| Synthetic test (2,969 faces) | **0.952** | **0.979** | **0.965** | **0.997** | **0.981** |
+| Empty-mask baseline | 0.000 | 0.000 | 0.000 | 1.000 | 0.000 |
+| v1 checkpoint (`visus_epoch50.pt`) | 0.357 | 0.467 | 0.412 | 0.001 | 0.019 |
+
+*IoU* is the occlusion IoU on faces where the prompted object is present. *Clean rate* is the share of empty predictions when the prompted object is absent, for example "glasses" on a mask-only face. *Score* is √(IoU × clean rate). See [Evaluation](#evaluation).
+
+On the original project's LFW / CelebA test subsets, whose ground truth is coarse landmark polygons, v2 gets occlusion IoU 0.500 / 0.485, against 0.417 / 0.515 for v1.
+
+![v2 predictions on validation faces](assets/v2/predictions.png)
+
+<details><summary>Training curves</summary>
+
+![training curves](assets/v2/training_curves.png)
+
+</details>
+
+Raw numbers are in [`results/`](results/).
+
+**v1 (original report)**
+
 | Test set | mIoU | |
 |---|---|---|
 | CelebA (held-out) | **0.9441** | in-distribution |

@@ -1,0 +1,78 @@
+{
+  "checkpoint": "/kaggle/input/datasets/sreenityathatikunta/visus-legacy-eval/legacy/visus_epoch50.pt",
+  "threshold": 0.1,
+  "sets": {
+    "synthetic test": {
+      "model": {
+        "threshold": 0.1,
+        "iou_glasses": 0.35659043552101416,
+        "iou_mask": 0.46713939823101075,
+        "iou": 0.41186491687601245,
+        "clean_rate": 0.0008375209380234506,
+        "overall": 0.24625173537289818,
+        "n_present": 3542,
+        "n_absent": 2388,
+        "score": 0.018572708244113147
+      },
+      "empty_baseline": {
+        "threshold": 0.5,
+        "iou_glasses": 0.0,
+        "iou_mask": 0.0,
+        "iou": 0.0,
+        "clean_rate": 1.0,
+        "overall": 0.4026981450252951,
+        "n_present": 3542,
+        "n_absent": 2388,
+        "score": 0.0
+      }
+    },
+    "LFW (legacy)": {
+      "model": {
+        "threshold": 0.1,
+        "iou_glasses": 0.3999308067801836,
+        "iou_mask": 0.43354017868343936,
+        "iou": 0.4167354927318115,
+        "clean_rate": NaN,
+        "overall": 0.41695955521116657,
+        "n_present": 300,
+        "n_absent": 0,
+        "score": 0.4167354927318115
+      },
+      "empty_baseline": {
+        "threshold": 0.5,
+        "iou_glasses": 0.0,
+        "iou_mask": 0.10526315789473684,
+        "iou": 0.05263157894736842,
+        "clean_rate": NaN,
+        "overall": 0.05333333333333334,
+        "n_present": 300,
+        "n_absent": 0,
+        "score": 0.05263157894736842
+      }
+    },
+    "CelebA (legacy)": {
+      "model": {
+        "threshold": 0.1,
+        "iou_glasses": 0.44968283235366585,
+        "iou_mask": 0.5811223242341018,
+        "iou": 0.5154025782938838,
+        "clean_rate": NaN,
+        "overall": 0.5239117465010195,
+        "n_present": 363,
+        "n_absent": 0,
+        "score": 0.5154025782938838
+      },
+      "empty_baseline": {
+        "threshold": 0.5,
+        "iou_glasses": 0.006329113924050633,
+        "iou_mask": 0.03414634146341464,
+        "iou": 0.020237727693732634,
+        "clean_rate": NaN,
+        "overall": 0.02203856749311295,
+        "n_present": 363,
+        "n_absent": 0,
+        "score": 0.020237727693732634
+      }
+    }
+  }
+}
