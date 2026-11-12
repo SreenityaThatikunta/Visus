@@ -59,7 +59,7 @@ def sanity(repo, data):
     import torch
     sys.path.insert(0, repo)
     from visus.data import OcclusionDataset, make_loader
-    from visus.evaluation import evaluate_model
+    from visus.evaluation import Metrics
     from visus.losses import BCEDiceLoss
     from visus.models import ModelConfig, build_model_and_optimizer
 
@@ -86,8 +86,11 @@ def sanity(repo, data):
     report["loss_end"] = float(loss)
     report["tuned_block_changed"] = not torch.equal(tuned0, blocks[-2].mlp.c_fc.weight)
     report["frozen_block_unchanged"] = torch.equal(frozen0, blocks[0].mlp.c_fc.weight)
-    ev = OcclusionDataset(data, "train", augment=False, max_samples=6)
-    report["overfit"] = evaluate_model(model, make_loader(ev, 12, shuffle=False, num_workers=0), "cuda").best()
+    m = Metrics()
+    model.eval()
+    with torch.no_grad():
+        m.update(model(imgs, txt)["probs"], msk, batch["kinds"], batch["present"])
+    report["overfit_same_batch"] = m.best("iou")
     model.cleanup()
     print("SANITY", json.dumps(report, indent=2), flush=True)
     with open(f"{OUT}/sanity.json", "w") as fh:

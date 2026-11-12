@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 import clip
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .attention import AttentionExtractor, TextAttentionExtractor, TextEmbedder
 from .segmentation import EnhancedSegmentationHead
@@ -22,6 +23,7 @@ class ModelConfig:
     text_mode: str = "embedding"          # "embedding" (CLIP text embedding) | "attention" (legacy)
     text_layers_to_use: int = 3           # only for text_mode="attention"
     head_rgb: bool = True                 # also feed the RGB image to the head
+    head_scale: float = 0.5               # head runs at this fraction of 224 px; logits are upsampled
     attn_layernorm: bool = True           # compute attention on LayerNorm-ed inputs (as CLIP does)
     predicts: str = "occlusion"           # what the sigmoid output means: "occlusion" | "background"
 
@@ -29,7 +31,7 @@ class ModelConfig:
     def legacy(cls) -> "ModelConfig":
         """The configuration of the released v1 checkpoint (`visus_epoch50.pt`)."""
         return cls(trainable_vision_blocks=0, text_mode="attention", head_rgb=False,
-                   attn_layernorm=False, predicts="background")
+                   attn_layernorm=False, predicts="background", head_scale=1.0)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -93,7 +95,12 @@ class EnhancedCLIPAttentionFinetuner(nn.Module):
         text_features = self.text_encoder.get_text_features(texts)
 
         head_in = torch.cat([attn, images], dim=1) if self.config.head_rgb else attn
+        s = self.config.head_scale
+        if s != 1.0:   # the full-resolution head needs ~14 GB at batch 64; half resolution ~4 GB
+            head_in = F.interpolate(head_in, scale_factor=s, mode="bilinear", align_corners=False)
         logits = self.seg_head(head_in, text_features)
+        if logits.shape[-2:] != (h, w):
+            logits = F.interpolate(logits, size=(h, w), mode="bilinear", align_corners=False)
         if self.config.predicts == "background":
             logits = -logits                     # sigmoid(-x) = 1 - sigmoid(x)
         return {"attention_maps": attn, "text_features": text_features,
