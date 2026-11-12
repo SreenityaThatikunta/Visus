@@ -56,6 +56,7 @@ def locate(tar_name, marker, dest):
 def sanity(repo, data):
     """Gradients reach the unfrozen CLIP blocks, frozen ones stay put, and 6 images can be overfit."""
     import random
+
     import torch
     sys.path.insert(0, repo)
     from visus.data import OcclusionDataset, make_loader

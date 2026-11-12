@@ -31,8 +31,7 @@ import torch  # noqa: E402
 from visus.checkpoint import load_model  # noqa: E402
 from visus.config import get_device  # noqa: E402
 from visus.data import OcclusionDataset, PairDataset, make_loader  # noqa: E402
-from visus.evaluation import (Metrics, evaluate_model, evaluate_predictions,  # noqa: E402
-                              legacy_celeba_pairs, legacy_lfw_pairs)
+from visus.evaluation import Metrics, evaluate_model, evaluate_predictions, legacy_celeba_pairs, legacy_lfw_pairs  # noqa: E402
 
 
 def empty_baseline(loader) -> dict:

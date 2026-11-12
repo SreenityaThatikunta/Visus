@@ -25,6 +25,7 @@ train/val and only appear in test.
 """
 from __future__ import annotations
 
+import bz2
 import csv
 import json
 import math
@@ -36,11 +37,10 @@ import sys
 import tarfile
 import time
 import urllib.request
-import bz2
 from multiprocessing import Pool
 
-import numpy as np
 import cv2
+import numpy as np
 
 LIMIT = 0            # >0: only process this many images (smoke test)
 SIZE = 512

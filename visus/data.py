@@ -28,11 +28,11 @@ from typing import Optional
 
 import clip
 import torch
+import torchvision.transforms.functional as TF
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import tv_tensors
 from torchvision.transforms import v2 as T
-import torchvision.transforms.functional as TF
 
 IMAGE_SIZE = 224
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)

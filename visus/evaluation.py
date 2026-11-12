@@ -76,6 +76,7 @@ class Metrics:
             "iou_glasses": iou["glasses"], "iou_mask": iou["mask"],
             "iou": self._mean([iou[k] for k in KINDS if not np.isnan(iou[k])]),
             "clean_rate": self._mean(absn),
+            "clean_glasses": clean["glasses"], "clean_mask": clean["mask"],
             "overall": self._mean(pres + absn),
             "n_present": len(pres), "n_absent": len(absn),
         }
