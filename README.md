@@ -70,7 +70,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Download `visus_v2.pt` from the [v2.0.0 release](../../releases/tag/v2.0.0) into `checkpoints/` (the v1 `visus_epoch50.pt` is still on the v1.0.0 release), then run them on the bundled samples:
+Download `visus_v2.pt` from the [v2.0.0 release](../../releases/tag/v2.0.0) into `checkpoints/` (the v1 `visus_epoch50.pt` is still on the v1.0.0 release), then run it on the bundled samples:
 
 ```bash
 python scripts/predict.py --checkpoint checkpoints/visus_v2.pt --input assets/samples --output outputs/demo
