@@ -97,19 +97,19 @@ class Trainer:
 
             val_loss = self._val_loss(val_loader)
             metrics = evaluate_model(self.model, val_loader, self.device, amp=self.amp)
-            best = metrics.best("overall")
+            best = metrics.best("score")
             row = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "val": best,
                    "val_at_0.5": metrics.summary(0.5), "minutes": (time.time() - t0) / 60}
             self.history.append(row)
             print(f"→ train {train_loss:.4f} | val {val_loss:.4f} | thr {best['threshold']:.1f}: "
                   f"IoU glasses {best['iou_glasses']:.3f}  mask {best['iou_mask']:.3f}  "
-                  f"clean {best['clean_rate']:.3f}  overall {best['overall']:.3f}", flush=True)
+                  f"clean {best['clean_rate']:.3f}  score {best['score']:.3f}", flush=True)
 
             meta = {"epoch": epoch, "threshold": best["threshold"], "val": best,
                     "train_config": {k: v for k, v in vars(self.cfg).items()}}
             save_checkpoint(self.model, f"{self.cfg.checkpoint_dir}/last.pt", **meta)
-            if best["overall"] > self.best_score:
-                self.best_score = best["overall"]
+            if best["score"] > self.best_score:
+                self.best_score = best["score"]
                 save_checkpoint(self.model, f"{self.cfg.checkpoint_dir}/best.pt", **meta)
                 print(f"  new best ({self.best_score:.4f}) → best.pt", flush=True)
 
@@ -119,5 +119,5 @@ class Trainer:
                 json.dump(self.history, fh, indent=2)
             plot_history(self.history, f"{self.cfg.output_dir}/training_curves.png")
 
-        print(f"\nDone in {(time.time() - t0) / 60:.1f} min. Best val overall {self.best_score:.4f}")
+        print(f"\nDone in {(time.time() - t0) / 60:.1f} min. Best val score {self.best_score:.4f}")
         return self.history

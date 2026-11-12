@@ -86,7 +86,7 @@ It reports, per test set, next to an "empty mask" baseline that predicts nothing
 
 - **IoU**: mean per-image IoU of the occluded region, for glasses and face masks, over images where the prompted object is present. An empty prediction scores 0.
 - **Clean rate**: when the prompt names an object that is *not* in the image, the share of predictions that are (nearly) empty.
-- **Overall**: both together, one number per test set.
+- **Score**: √(IoU × clean rate), which picks the checkpoint and the threshold. It is 0 both for a model that never predicts anything and for one that ignores the prompt.
 
 `--lfw-*` / `--celeba-*` add the small LFW and CelebA test subsets from the original project (their masks mark the occlusion in black and are coarse landmark polygons).
 

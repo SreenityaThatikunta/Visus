@@ -13,6 +13,8 @@ Reported numbers
                     face asked for "glasses"): share of predictions that are empty
                     (< 0.5% of the image). Tests that the model listens to the prompt.
   * overall         mean over all pairs, counting an absent pair as 1 if clean else 0.
+                    (An empty mask scores ~0.4 here, so it is reported but not optimised.)
+  * score           sqrt(IoU x clean rate); picks the threshold and the best checkpoint.
 """
 from __future__ import annotations
 
@@ -78,7 +80,21 @@ class Metrics:
             "n_present": len(pres), "n_absent": len(absn),
         }
 
-    def best(self, key: str = "overall") -> dict:
+    @staticmethod
+    def score(row: dict) -> float:
+        """sqrt(IoU x clean rate): 0 for an always-empty model AND for one that ignores the prompt.
+        Used to pick the threshold and the best checkpoint."""
+        iou, clean = row["iou"], row["clean_rate"]
+        if np.isnan(clean):
+            return iou
+        return float(np.sqrt(max(iou, 0) * max(clean, 0)))
+
+    def best(self, key: str = "score") -> dict:
+        if key == "score":
+            rows = [dict(self.summary(t)) for t in self.thresholds]
+            for r in rows:
+                r["score"] = self.score(r)
+            return max(rows, key=lambda r: r["score"])
         rows = [self.summary(t) for t in self.thresholds]
         rows = [r for r in rows if not np.isnan(r[key])] or rows
         return max(rows, key=lambda r: r[key])

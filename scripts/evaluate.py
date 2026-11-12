@@ -46,7 +46,7 @@ def fmt(name, r):
     def f(x):
         return "   -  " if x != x else f"{x:6.3f}"
     return (f"{name:<22} {f(r['iou_glasses'])} {f(r['iou_mask'])} {f(r['iou'])} "
-            f"{f(r['clean_rate'])} {f(r['overall'])}   n={r['n_present']}+{r['n_absent']}")
+            f"{f(r['clean_rate'])} {f(Metrics.score(r))} {f(r['overall'])}   n={r['n_present']}+{r['n_absent']}")
 
 
 def main():
@@ -86,7 +86,7 @@ def main():
         sets["CelebA (legacy)"] = PairDataset(legacy_celeba_pairs(a.celeba_images, a.celeba_gt), occluded_is_white=False)
 
     results = {"checkpoint": a.checkpoint, "threshold": thr, "sets": {}}
-    print(f"\n{'':<22} {'IoU-gl':>6} {'IoU-mk':>6} {'IoU':>6} {'clean':>6} {'overall':>6}")
+    print(f"\n{'':<22} {'IoU-gl':>6} {'IoU-mk':>6} {'IoU':>6} {'clean':>6} {'score':>6} {'overall':>6}")
     for name, ds in sets.items():
         loader = make_loader(ds, a.batch_size, shuffle=False, num_workers=a.workers)
         m = evaluate_model(model, loader, device, thresholds=(thr,), amp=device == "cuda")
@@ -94,6 +94,7 @@ def main():
         print(f"-- {name} ({len(ds)} pairs)")
         print(fmt("  model", r))
         print(fmt("  empty-mask baseline", base))
+        r["score"], base["score"] = Metrics.score(r), Metrics.score(base)
         results["sets"][name] = {"model": r, "empty_baseline": base}
 
     if a.json:
