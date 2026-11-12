@@ -70,10 +70,10 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Download trained weights from the [Releases](../../releases) page into `checkpoints/`, then run them on the bundled samples:
+Download `visus_v2.pt` from the [v2.0.0 release](../../releases/tag/v2.0.0) into `checkpoints/` (the v1 `visus_epoch50.pt` is still on the v1.0.0 release), then run them on the bundled samples:
 
 ```bash
-python scripts/predict.py --checkpoint checkpoints/visus_epoch50.pt --input assets/samples --output outputs/demo
+python scripts/predict.py --checkpoint checkpoints/visus_v2.pt --input assets/samples --output outputs/demo
 ```
 
 For each image this writes `<name>_<prompt>_mask_binary.png` (occluded region in white) and a `<name>_<prompt>_viz.png` figure (input, CLIP attention, mask overlay). The prompt is read from the filename (`..._glasses.jpg`, `..._mask.jpg`); use `--prompt "sunglasses"` to set it yourself. The threshold stored in the checkpoint is used unless you pass `--threshold`. It runs on CUDA, Apple Silicon (MPS) or CPU, picked automatically.
